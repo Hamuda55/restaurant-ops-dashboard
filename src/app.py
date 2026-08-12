@@ -14,6 +14,7 @@ Two data sources, selected in the sidebar:
 
 import datetime as dt
 import io
+import math
 from pathlib import Path
 
 import numpy as np
@@ -247,17 +248,37 @@ if has_orders:
     daily_kpi["avg_txn"] = (daily_kpi["revenue"] / daily_kpi["txns"]).replace([np.inf, -np.inf], np.nan)
     spark = len(daily_kpi) > 1  # a one-point sparkline isn't a trend
 
+    # Compare against the immediately preceding period of equal length, so
+    # a KPI reads as "up 12%" rather than just a bare number.
+    period_days = (end_date - start_date).days + 1
+    prev_end = start_date - dt.timedelta(days=1)
+    prev_start = prev_end - dt.timedelta(days=period_days - 1)
+    prev_mask = (
+        (orders["date"].dt.date >= prev_start) & (orders["date"].dt.date <= prev_end)
+        & (orders["dow_name"].isin(dow_sel)) & (orders["day_part"].isin(part_sel))
+    )
+    prev_orders = orders[prev_mask]
+    prev_revenue = prev_orders["gross_sales"].sum()
+    prev_n_transactions = len(prev_orders)
+    prev_avg_txn = prev_revenue / prev_n_transactions if prev_n_transactions else 0
+    has_prev = prev_n_transactions > 0  # no data before this dataset's start, e.g. "All data" already selected
+
+    delta_help = f" vs the previous {period_days}-day period ({prev_start:%d %b} – {prev_end:%d %b})."
+    revenue_delta = f"{total_revenue / prev_revenue - 1:+.0%}" if has_prev and prev_revenue else None
+    txn_delta = f"{n_transactions / prev_n_transactions - 1:+.0%}" if has_prev else None
+    avg_txn_delta = f"{avg_txn / prev_avg_txn - 1:+.0%}" if has_prev and prev_avg_txn else None
+
     k1, k2, k3 = st.columns(3)
-    k1.metric("Revenue", f"£{total_revenue:,.0f}", icon="💷", border=True,
-              help="Gross revenue across the selected filters",
+    k1.metric("Revenue", f"£{total_revenue:,.0f}", icon="💷", border=True, delta=revenue_delta,
+              help="Gross revenue across the selected filters" + (delta_help if revenue_delta else ""),
               chart_data=daily_kpi["revenue"] if spark else None, chart_type="area")
-    k2.metric("Transactions", f"{n_transactions:,}", icon="🧾", border=True,
-              help="Completed POS transactions in range",
+    k2.metric("Transactions", f"{n_transactions:,}", icon="🧾", border=True, delta=txn_delta,
+              help="Completed POS transactions in range" + (delta_help if txn_delta else ""),
               chart_data=daily_kpi["txns"] if spark else None, chart_type="area")
-    k3.metric("Avg txn value", f"£{avg_txn:,.2f}", icon="💳", border=True,
+    k3.metric("Avg txn value", f"£{avg_txn:,.2f}", icon="💳", border=True, delta=avg_txn_delta,
               help="Gross revenue ÷ transaction count. Square's export doesn't include "
                    "covers/party size, so this is per-transaction rather than per-cover — "
-                   "a real constraint of POS-only data.",
+                   "a real constraint of POS-only data." + (delta_help if avg_txn_delta else ""),
               chart_data=daily_kpi["avg_txn"] if spark else None, chart_type="area")
 
     k4, k5 = st.columns(2)
@@ -345,6 +366,58 @@ with tab_peak:
                 st.plotly_chart(fig3, width='stretch')
                 st.caption(f"Busiest tables by transaction count (top 10){'' if focus_dow in (None, 'All days') else f' — {focus_dow} only'}.")
 
+        all_tables = focus_orders.dropna(subset=["table_number"]).copy()
+        if not all_tables.empty:
+            st.subheader("Table activity — floor view", divider=True)
+            table_stats = all_tables.groupby("table_number", as_index=False).agg(
+                transactions=("order_id", "count"), revenue=("gross_sales", "sum")
+            )
+
+            def _table_sort_key(t):
+                try:
+                    return (0, int(str(t).split(" ")[0]))
+                except ValueError:
+                    return (1, str(t))
+
+            table_stats["sort_key"] = table_stats["table_number"].map(_table_sort_key)
+            table_stats = table_stats.sort_values("sort_key").reset_index(drop=True)
+
+            n = len(table_stats)
+            ncols = max(1, math.ceil(math.sqrt(n * 1.6)))
+            table_stats["col"] = table_stats.index % ncols
+            table_stats["row"] = table_stats.index // ncols
+
+            max_txn = table_stats["transactions"].max()
+            min_size, max_size = 22, 55
+            table_stats["marker_size"] = (
+                min_size + (table_stats["transactions"] / max_txn) * (max_size - min_size) if max_txn else min_size
+            )
+
+            fig4 = go.Figure(go.Scatter(
+                x=table_stats["col"], y=-table_stats["row"], mode="markers+text",
+                marker=dict(
+                    size=table_stats["marker_size"], color=table_stats["revenue"],
+                    colorscale=[[i / (len(theme.SEQUENTIAL_BLUE) - 1), c] for i, c in enumerate(theme.SEQUENTIAL_BLUE)],
+                    colorbar=dict(title="Revenue<br>(£)"), line=dict(width=1, color=theme.BASELINE),
+                ),
+                text=table_stats["table_number"], textposition="bottom center",
+                textfont=dict(size=10, color=theme.INK_MUTED),
+                customdata=table_stats[["transactions", "revenue"]],
+                hovertemplate="Table %{text}<br>%{customdata[0]} transactions<br>£%{customdata[1]:,.0f} revenue<extra></extra>",
+            ))
+            fig4.update_layout(
+                **{k: v for k, v in theme.PLOTLY_LAYOUT.items() if k not in ("xaxis", "yaxis")},
+                height=max(280, 90 * (table_stats["row"].max() + 1)), showlegend=False,
+            )
+            fig4.update_xaxes(visible=False)
+            fig4.update_yaxes(visible=False)
+            st.plotly_chart(fig4, width='stretch')
+            st.caption(
+                "Every table this period, sized by transaction count and coloured by revenue. "
+                "Auto-arranged in a grid, not the restaurant's literal layout — Square doesn't "
+                "export table coordinates, only the number/label staff enter."
+            )
+
 # ---------------------------------------------------------------------------
 # Revenue by Day-part
 # ---------------------------------------------------------------------------
@@ -413,6 +486,34 @@ with tab_daypart:
         if focus_part and focus_part != "All day-parts":
             st.caption(f"Revenue from {focus_part} only, by day.")
 
+        st.subheader(
+            "Daily revenue — calendar view", divider=True,
+            help="Same daily data as the trend above, laid out as a calendar grid instead of a "
+                 "line — a different, more scannable shape for spotting which days of the week "
+                 "tend to run strong or weak."
+        )
+        cal = daily.copy()
+        cal["date"] = pd.to_datetime(cal["date"])
+        cal["dow_num"] = cal["date"].dt.dayofweek
+        cal["week_idx"] = (cal["date"] - cal["date"].min()).dt.days // 7
+        dow_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+        pivot = cal.pivot(index="dow_num", columns="week_idx", values="gross_sales").reindex(range(7))
+        date_pivot = cal.pivot(index="dow_num", columns="week_idx", values="date").reindex(range(7))
+        customdata = [
+            [pd.Timestamp(d).strftime("%d %b %Y") if pd.notna(d) else "" for d in row]
+            for row in date_pivot.values
+        ]
+
+        fig5 = go.Figure(go.Heatmap(
+            z=pivot.values, x=[f"Wk {int(w) + 1}" for w in pivot.columns], y=dow_labels,
+            colorscale=[[i / (len(theme.SEQUENTIAL_BLUE) - 1), c] for i, c in enumerate(theme.SEQUENTIAL_BLUE)],
+            customdata=customdata, hovertemplate="%{customdata}<br>£%{z:,.0f}<extra></extra>",
+            colorbar=dict(title="Revenue<br>(£)"), xgap=3, ygap=3,
+        ))
+        fig5.update_layout(**theme.PLOTLY_LAYOUT, height=260, xaxis_title=None, yaxis_title=None)
+        st.plotly_chart(fig5, width='stretch')
+
 # ---------------------------------------------------------------------------
 # Menu Performance
 # ---------------------------------------------------------------------------
@@ -449,6 +550,21 @@ with tab_menu:
         )
         item_f["avg_unit_price"] = (item_f["revenue"] / item_f["units_sold"]).replace([np.inf, -np.inf], np.nan)
         item_f["margin_pct"] = 1 - item_f["category_group"].map(cost_map)
+
+        with st.expander("💡 What if you adjusted menu prices?"):
+            st.caption(
+                "Assumes unit sales stay constant — a simplification, since real price elasticity "
+                "would trim volume somewhat as prices rise. Useful for a rough what-if, not a forecast."
+            )
+            price_change_pct = st.slider("Price change %", -20, 30, 0, key="price_what_if")
+            if price_change_pct != 0:
+                current_revenue = item_f["revenue"].sum()
+                projected_revenue = current_revenue * (1 + price_change_pct / 100)
+                pw1, pw2 = st.columns(2)
+                pw1.metric("Current revenue", f"£{current_revenue:,.0f}", border=True,
+                           help="For the items currently in view, in the selected date range")
+                pw2.metric("Projected revenue", f"£{projected_revenue:,.0f}", border=True,
+                           delta=f"{price_change_pct:+d}%")
 
         c1, c2 = st.columns([1.1, 1])
         with c1:

@@ -71,29 +71,40 @@ turned into a measurable, filterable tool.
 
 ## What's in the dashboard
 
-- **KPI cards with sparklines** — the top-line Revenue/Transactions/Avg
-  transaction value cards each carry a small inline trend of the daily
-  values behind the headline number, so the shape of the period is visible
-  at a glance, not just the total.
+- **KPI cards with sparklines + period-over-period deltas** — the top-line
+  Revenue/Transactions/Avg transaction value cards each carry a small inline
+  trend of the daily values behind the headline number, plus a +/-% delta
+  against the immediately preceding period of equal length (e.g. this 7
+  days vs. the 7 days before), with an up/down arrow. No delta is shown when
+  there's no prior data to compare against, rather than a misleading 0%.
 - **Auto-generated insights** — each tab computes a plain-English "Reading
   it" callout from whatever's currently in view (busiest slot, dominant
   day-part, best seller), so it updates live as filters change rather than
   being a static caption.
 - **Peak Trading Hours** — transactions by hour, one small bar-chart panel
   per day of week (deliberately not a heatmap — a grid of bars reads more
-  precisely than colour intensity), plus totals by hour and busiest tables.
-  A "Focus on a day" filter drills into a single day of week.
+  precisely than colour intensity), totals by hour, a top-10 busiest-tables
+  chart, and a **table floor view** — every table that period as a
+  clickable-feeling grid of circles, sized by transaction count and
+  coloured by revenue. (Auto-arranged, not the restaurant's literal floor
+  plan — Square doesn't export table coordinates.) A "Focus on a day"
+  filter drills into a single day of week.
 - **Revenue by Day-part** — share of revenue by Breakfast/Lunch/Afternoon/
-  Dinner, split by day of week, and a daily revenue trend. A "Focus on a
-  day-part" filter isolates one part across all three charts.
+  Dinner, split by day of week, a daily revenue trend, and a **calendar
+  heatmap** of daily revenue (GitHub-contributions-style grid) as a second,
+  more scannable lens on the same daily numbers. A "Focus on a day-part"
+  filter isolates one part across the first three charts.
 - **Menu Performance** — a **Best sellers / Worst sellers** toggle over
   units sold (the worst-sellers view is the "candidates to cut" list), a
   menu-engineering quadrant (popularity vs. estimated margin — Stars/
   Plowhorses/Puzzles/Dogs) with live-adjustable cost-of-sales sliders, a
-  searchable item lookup, and a **clickable performance table** — click any
-  row for the same detail card the lookup gives you. (Streamlit's native
-  dataframe row-selection, not a Plotly chart click — the two use different
-  underlying mechanisms, and only the former proved reliable here.)
+  **"what if you adjusted menu prices?" slider** projecting revenue impact
+  (assuming constant unit sales — a stated simplification, not a demand
+  forecast), a searchable item lookup, and a **clickable performance
+  table** — click any row for the same detail card the lookup gives you.
+  (Streamlit's native dataframe row-selection, not a Plotly chart click —
+  the two use different underlying mechanisms, and only the former proved
+  reliable here.)
 - **Staffing** — on the demo dataset, clearly flagged as a modelled
   placeholder (no real Timecards export exists for it yet), showing the
   staffing-lag analysis method on a synthetic year. On an upload with a

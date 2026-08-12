@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.streamlit/
+
+# Raw Square POS exports — contain staff names, customer IDs, card/device
+# details. Never publish these. src/load_square_data.py reads from here and
+# writes anonymised, aggregate-safe output to data/real/, which IS tracked.
+data/raw/

@@ -1,0 +1,33 @@
+item_id,category,item_name,price,popularity_weight,cost,margin
+M001,Starter,Whipped Feta & Hot Honey,8.5,9,2.21,6.29
+M002,Starter,"Grilled Octopus, Salsa Verde",12.5,8,4.25,8.25
+M003,Starter,King Prawn Saganaki,11.0,7,3.96,7.04
+M004,Starter,Ox Cheek Croquettes,9.5,6,2.66,6.84
+M005,Starter,"Burrata, Heritage Tomato",10.5,6,3.36,7.14
+M006,Starter,"Soupe de Poisson, Rouille",8.0,3,1.92,6.08
+M007,Starter,"Charred Flatbread, Tzatziki",6.5,5,1.3,5.2
+M008,Main,"Lamb Chops, Salsa Verde",24.0,10,8.16,15.84
+M009,Main,"Slow-Cooked Ox Cheek, Celeriac",22.0,9,6.6,15.4
+M010,Main,Cote de Boeuf (for two),62.0,4,22.32,39.68
+M011,Main,Whole Grilled Sea Bass,26.0,8,9.88,16.12
+M012,Main,Pan-Seared Dover Sole,29.0,4,11.6,17.4
+M013,Main,Corn-Fed Chicken Supreme,19.5,9,5.85,13.65
+M014,Main,Grilled Squid Linguine,18.0,6,5.04,12.96
+M015,Main,Wild Mushroom Risotto (v),16.5,5,3.96,12.54
+M016,Main,Brasserie Moussaka,17.5,5,4.73,12.77
+M017,Main,"Signature Burger, Aged Cheddar",16.0,8,4.8,11.2
+M018,Side,Triple-Cooked Chips,5.5,10,1.21,4.29
+M019,Side,Greek Salad,5.5,6,1.32,4.18
+M020,Side,Charred Tenderstem Broccoli,5.5,5,1.43,4.07
+M021,Side,"Sauteed Spinach, Garlic",5.0,3,1.2,3.8
+M022,Dessert,Baklava Cheesecake,8.5,9,1.87,6.63
+M023,Dessert,Dark Chocolate Fondant,9.0,8,2.16,6.84
+M024,Dessert,Citrus Olive Oil Cake,7.5,5,1.5,6.0
+M025,Dessert,Affogato,6.5,4,1.17,5.33
+M026,Drink,House Red / White (glass),8.0,10,1.92,6.08
+M027,Drink,Negroni,11.0,6,2.2,8.8
+M028,Drink,Aperol Spritz,10.5,7,2.1,8.4
+M029,Drink,Craft Beer,6.5,7,1.69,4.81
+M030,Drink,Espresso Martini,11.5,5,2.3,9.2
+M031,Drink,Soft Drink / Juice,3.5,6,1.05,2.45
+M032,Drink,Coffee,3.5,8,0.98,2.52

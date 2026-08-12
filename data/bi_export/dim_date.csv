@@ -1,0 +1,16 @@
+date,day_name,is_weekend
+2026-07-17,Friday,False
+2026-07-18,Saturday,True
+2026-07-19,Sunday,True
+2026-07-20,Monday,False
+2026-07-21,Tuesday,False
+2026-07-22,Wednesday,False
+2026-07-23,Thursday,False
+2026-07-24,Friday,False
+2026-07-25,Saturday,True
+2026-07-26,Sunday,True
+2026-07-27,Monday,False
+2026-07-28,Tuesday,False
+2026-07-29,Wednesday,False
+2026-07-30,Thursday,False
+2026-07-31,Friday,False

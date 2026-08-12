@@ -2,7 +2,7 @@
 __pycache__/
 *.pyc
 .DS_Store
-.streamlit/
+.streamlit/secrets.toml
 
 # Raw Square POS exports — contain staff names, customer IDs, card/device
 # details. Never publish these. src/load_square_data.py reads from here and

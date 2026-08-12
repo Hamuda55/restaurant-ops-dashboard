@@ -53,7 +53,7 @@ staffing = load_synthetic_staffing()
 # Sidebar filters
 # ---------------------------------------------------------------------------
 st.sidebar.title("🍽️ Restaurant Ops")
-st.sidebar.caption("Restaurant Operations Analytics — real Square POS data")
+st.sidebar.caption("Real Square POS data · anonymised")
 
 min_date, max_date = orders["date"].min().date(), orders["date"].max().date()
 date_range = st.sidebar.date_input("Date range", value=(min_date, max_date), min_value=min_date, max_value=max_date)
@@ -63,8 +63,12 @@ else:
     start_date, end_date = min_date, max_date
 
 dow_present_all = [d for d in DOW_ORDER if d in orders["dow_name"].unique()]
-dow_sel = st.sidebar.multiselect("Day of week", dow_present_all, default=dow_present_all)
-part_sel = st.sidebar.multiselect("Day-part", DAY_PART_ORDER, default=DAY_PART_ORDER)
+dow_sel = st.sidebar.pills("Day of week", dow_present_all, selection_mode="multi",
+                            default=dow_present_all, width="stretch")
+part_sel = st.sidebar.pills("Day-part", DAY_PART_ORDER, selection_mode="multi",
+                             default=DAY_PART_ORDER, width="stretch")
+dow_sel = dow_sel or []
+part_sel = part_sel or []
 
 mask = (
     (orders["date"].dt.date >= start_date) & (orders["date"].dt.date <= end_date)
@@ -73,16 +77,16 @@ mask = (
 f_orders = orders[mask].copy()
 
 st.sidebar.divider()
-st.sidebar.markdown(
-    "**About this project**\n\n"
-    "Built on real, anonymised Square POS exports from an independent "
-    "restaurant I help run (17–31 Jul 2026 — the export window available so "
-    "far; the business name is intentionally left out). Staff names, "
-    "customer details, card and device info are stripped at load time and "
-    "never stored in this repo — see `src/load_square_data.py`.\n\n"
-    "Staffing/labour isn't wired to real data yet (no Timecards export "
-    "available) — that tab uses a clearly-marked illustrative model."
-)
+with st.sidebar.expander("ℹ️ About this project"):
+    st.markdown(
+        "Built on real, anonymised Square POS exports from an independent "
+        "restaurant I help run (17–31 Jul 2026 — the export window available "
+        "so far; the business name is intentionally left out). Staff names, "
+        "customer details, card and device info are stripped at load time "
+        "and never stored in this repo — see `src/load_square_data.py`.\n\n"
+        "Staffing/labour isn't wired to real data yet (no Timecards export "
+        "available) — that tab uses a clearly-marked illustrative model."
+    )
 
 # ---------------------------------------------------------------------------
 # Header + KPIs
@@ -100,17 +104,21 @@ n_days = f_orders["date"].dt.date.nunique()
 avg_daily_revenue = total_revenue / n_days if n_days else 0
 total_tips = f_orders["tip"].sum()
 
-k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("Revenue (gross)", f"£{total_revenue:,.0f}")
-k2.metric("Transactions", f"{n_transactions:,}")
-k3.metric("Avg transaction value", f"£{avg_txn:,.2f}")
-k4.metric("Avg daily revenue", f"£{avg_daily_revenue:,.0f}")
-k5.metric("Trading days in view", f"{n_days}")
+k1, k2, k3 = st.columns(3)
+k1.metric("Revenue", f"£{total_revenue:,.0f}", icon="💷", border=True,
+          help="Gross revenue across the selected filters")
+k2.metric("Transactions", f"{n_transactions:,}", icon="🧾", border=True,
+          help="Completed POS transactions in range")
+k3.metric("Avg txn value", f"£{avg_txn:,.2f}", icon="💳", border=True,
+          help="Gross revenue ÷ transaction count. Square's export doesn't include "
+               "covers/party size, so this is per-transaction rather than per-cover — "
+               "a real constraint of POS-only data.")
 
-st.caption(
-    "Note: Square's export doesn't include covers/party size, so metrics here are "
-    "per-transaction rather than per-cover — a real constraint of POS-only data."
-)
+k4, k5 = st.columns(2)
+k4.metric("Avg daily revenue", f"£{avg_daily_revenue:,.0f}", icon="📈", border=True,
+          help="Total revenue ÷ trading days in view")
+k5.metric("Trading days", f"{n_days}", icon="📅", border=True,
+          help="Distinct calendar days with at least one transaction, in the current filter")
 
 st.divider()
 
@@ -123,7 +131,7 @@ tab_peak, tab_daypart, tab_menu, tab_staff, tab_data = st.tabs(
 # Peak Trading Hours
 # ---------------------------------------------------------------------------
 with tab_peak:
-    st.subheader("When is the restaurant actually busy?")
+    st.subheader("When is the restaurant actually busy?", divider=True)
     st.caption(f"Transaction count by hour and day of week — {n_days} real trading days ({start_date:%d %b} – {end_date:%d %b %Y}).")
 
     heat = f_orders.groupby(["dow_name", "hour"], as_index=False).size()
@@ -165,7 +173,7 @@ with tab_peak:
 # Revenue by Day-part
 # ---------------------------------------------------------------------------
 with tab_daypart:
-    st.subheader("Where does the revenue actually come from?")
+    st.subheader("Where does the revenue actually come from?", divider=True)
 
     c1, c2 = st.columns([1, 1])
     with c1:
@@ -188,27 +196,32 @@ with tab_daypart:
         st.plotly_chart(fig2, width='stretch')
         st.caption("Revenue by day of week, split by day-part.")
 
-    st.markdown("##### Daily revenue trend")
+    st.subheader(
+        "Daily revenue trend", divider=True,
+        help=f"Only {n_days} days of POS data are available so far ({start_date:%d %b} – "
+             f"{end_date:%d %b %Y}) — too short a window to read seasonality from. More "
+             "Square exports would extend this directly."
+    )
     daily = f_orders.groupby("date", as_index=False)["gross_sales"].sum()
     fig3 = px.line(daily, x="date", y="gross_sales", color_discrete_sequence=[theme.CAT_BLUE], markers=True)
     fig3.update_traces(hovertemplate="%{x|%a %d %b}<br>£%{y:,.0f}<extra></extra>", line=dict(width=2))
     fig3.update_layout(**theme.PLOTLY_LAYOUT, height=320, xaxis_title=None, yaxis_title="Revenue (£)")
     st.plotly_chart(fig3, width='stretch')
-    st.caption(f"Only {n_days} days of POS data are available so far ({start_date:%d %b} – {end_date:%d %b %Y}) — too short a window to read seasonality from; more exports would extend this.")
 
 # ---------------------------------------------------------------------------
 # Menu Performance
 # ---------------------------------------------------------------------------
 with tab_menu:
-    st.subheader("What sells — and what's actually worth selling")
-    st.caption(
-        "Item Sales report covers the same window as the transactions above. "
-        "Margin isn't in the Square export (no COGS) — the quadrant chart uses "
-        "**estimated** cost-of-sales benchmarks by category (Food 30%, Drink 22%, "
-        "Dessert 24%), not actual item cost."
+    st.subheader(
+        "What sells — and what's actually worth selling", divider=True,
+        help="Item Sales report covers the same window as the transactions above. Margin "
+             "isn't in the Square export (no COGS) — the quadrant chart uses **estimated** "
+             "cost-of-sales benchmarks by category (Food 30%, Drink 22%, Dessert 24%), not "
+             "actual item cost."
     )
 
-    cat_sel = st.multiselect("Filter by category", CATEGORY_ORDER, default=CATEGORY_ORDER, key="menu_cat")
+    cat_sel = st.pills("Filter by category", CATEGORY_ORDER, selection_mode="multi",
+                        default=CATEGORY_ORDER, key="menu_cat") or []
     item_f = item_sales[item_sales["category_group"].isin(cat_sel)].copy()
 
     c1, c2 = st.columns([1.1, 1])
@@ -238,7 +251,7 @@ with tab_menu:
             "bottom-right = **Plowhorses**, top-left = **Puzzles**, bottom-left = **Dogs**."
         )
 
-    st.markdown("##### Full item performance")
+    st.subheader("Full item performance", divider=True)
     st.dataframe(
         item_f.sort_values("revenue", ascending=False)[
             ["item_name", "raw_category", "category_group", "units_sold", "revenue", "avg_unit_price"]
@@ -257,7 +270,7 @@ with tab_staff:
         "the analysis. Swap in a real Timecards export and this becomes a live chart — the "
         "logic doesn't change."
     )
-    st.subheader("Does the rota track actual demand? (modelled)")
+    st.subheader("Does the rota track actual demand? (modelled)", divider=True)
     st.caption(
         "Staff are scheduled off a trailing 4-week average for that weekday/day-part in this "
         "model — so the rota structurally lags fast ramps and drop-offs."
@@ -299,11 +312,11 @@ with tab_staff:
 # Data tab
 # ---------------------------------------------------------------------------
 with tab_data:
-    st.subheader("Underlying data")
-    st.caption(
-        "Real, anonymised Square POS exports — see `src/load_square_data.py` for the cleaning "
-        "and anonymisation logic (staff names, customer IDs, card/device details are dropped "
-        "at load time and never written here)."
+    st.subheader(
+        "Underlying data", divider=True,
+        help="Real, anonymised Square POS exports — see `src/load_square_data.py` for the "
+             "cleaning and anonymisation logic (staff names, customer IDs, card/device "
+             "details are dropped at load time and never written here)."
     )
     d1, d2 = st.columns(2)
     with d1:

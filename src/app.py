@@ -6,6 +6,7 @@ data (Square Timecards not exported) — that tab runs on a modelled, clearly
 labelled synthetic year instead, to demonstrate the analysis approach.
 """
 
+import datetime as dt
 from pathlib import Path
 
 import pandas as pd
@@ -56,7 +57,19 @@ st.sidebar.title("🍽️ Restaurant Ops")
 st.sidebar.caption("Real Square POS data · anonymised")
 
 min_date, max_date = orders["date"].min().date(), orders["date"].max().date()
-date_range = st.sidebar.date_input("Date range", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+
+preset = st.sidebar.segmented_control(
+    "Quick range", ["All data", "Last 7 days", "Custom"], default="All data", width="stretch"
+)
+if preset == "Last 7 days":
+    preset_start = max(min_date, max_date - dt.timedelta(days=6))
+else:
+    preset_start = min_date
+
+date_range = st.sidebar.date_input(
+    "Date range", value=(preset_start, max_date), min_value=min_date, max_value=max_date,
+    key=f"date_input_{preset}",
+)
 if isinstance(date_range, tuple) and len(date_range) == 2:
     start_date, end_date = date_range
 else:
@@ -150,16 +163,28 @@ with tab_peak:
     fig.update_layout(**theme.PLOTLY_LAYOUT, height=340, xaxis_title="Hour", yaxis_title=None)
     st.plotly_chart(fig, width='stretch')
 
+    focus_dow = st.pills("Focus on a day", ["All days"] + dow_present, selection_mode="single",
+                          default="All days", key="peak_focus_dow")
+    focus_orders = f_orders if not focus_dow or focus_dow == "All days" else f_orders[f_orders["dow_name"] == focus_dow]
+
+    if focus_dow and focus_dow != "All days":
+        n_focus = len(focus_orders)
+        fc1, fc2, fc3 = st.columns(3)
+        fc1.metric(f"{focus_dow} transactions", f"{n_focus:,}", border=True)
+        fc2.metric(f"{focus_dow} revenue", f"£{focus_orders['gross_sales'].sum():,.0f}", border=True)
+        fc3.metric(f"{focus_dow} avg txn value",
+                   f"£{(focus_orders['gross_sales'].sum() / n_focus if n_focus else 0):,.2f}", border=True)
+
     c1, c2 = st.columns(2)
     with c1:
-        by_hour = f_orders.groupby("hour", as_index=False).size().sort_values("hour")
+        by_hour = focus_orders.groupby("hour", as_index=False).size().sort_values("hour")
         fig2 = px.bar(by_hour, x="hour", y="size", color_discrete_sequence=[theme.CAT_BLUE])
         fig2.update_layout(**theme.PLOTLY_LAYOUT, height=320, xaxis_title="Hour", yaxis_title="Transactions")
         fig2.update_traces(hovertemplate="Hour %{x}:00<br>%{y} transactions<extra></extra>")
         st.plotly_chart(fig2, width='stretch')
-        st.caption("Total transactions by hour, across the selected range.")
+        st.caption(f"Total transactions by hour{'' if focus_dow in (None, 'All days') else f' — {focus_dow} only'}.")
     with c2:
-        top_tables = f_orders["table_number"].dropna().astype(str)
+        top_tables = focus_orders["table_number"].dropna().astype(str)
         top_tables = top_tables[top_tables != ""].value_counts().head(10).reset_index()
         top_tables.columns = ["table_number", "transactions"]
         fig3 = px.bar(top_tables, x="table_number", y="transactions", color_discrete_sequence=[theme.CAT_ORANGE])
@@ -167,7 +192,7 @@ with tab_peak:
                             xaxis_type="category")
         fig3.update_traces(hovertemplate="Table %{x}<br>%{y} transactions<extra></extra>")
         st.plotly_chart(fig3, width='stretch')
-        st.caption("Busiest tables by transaction count (top 10).")
+        st.caption(f"Busiest tables by transaction count (top 10){'' if focus_dow in (None, 'All days') else f' — {focus_dow} only'}.")
 
 # ---------------------------------------------------------------------------
 # Revenue by Day-part
@@ -175,26 +200,40 @@ with tab_peak:
 with tab_daypart:
     st.subheader("Where does the revenue actually come from?", divider=True)
 
+    part_present = [p for p in DAY_PART_ORDER if p in f_orders["day_part"].unique()]
+    focus_part = st.pills("Focus on a day-part", ["All day-parts"] + part_present, selection_mode="single",
+                           default="All day-parts", key="daypart_focus")
+    part_orders = f_orders if not focus_part or focus_part == "All day-parts" else f_orders[f_orders["day_part"] == focus_part]
+
+    if focus_part and focus_part != "All day-parts":
+        total_rev = f_orders["gross_sales"].sum()
+        part_rev = part_orders["gross_sales"].sum()
+        fc1, fc2, fc3 = st.columns(3)
+        fc1.metric(f"{focus_part} revenue", f"£{part_rev:,.0f}", border=True)
+        fc2.metric("Share of total", f"{(part_rev / total_rev if total_rev else 0):.1%}", border=True)
+        fc3.metric(f"{focus_part} transactions", f"{len(part_orders):,}", border=True)
+
     c1, c2 = st.columns([1, 1])
     with c1:
         rev_part = f_orders.groupby("day_part", as_index=False)["gross_sales"].sum().set_index("day_part").reindex(
-            [p for p in DAY_PART_ORDER if p in f_orders["day_part"].unique()]
+            part_present
         ).reset_index()
         fig = px.pie(rev_part, names="day_part", values="gross_sales", hole=0.55,
                      color="day_part", color_discrete_map=theme.DAY_PART_COLOR)
-        fig.update_traces(hovertemplate="%{label}<br>£%{value:,.0f} (%{percent})<extra></extra>", textinfo="label+percent")
+        fig.update_traces(hovertemplate="%{label}<br>£%{value:,.0f} (%{percent})<extra></extra>", textinfo="label+percent",
+                           pull=[0.06 if p == focus_part else 0 for p in rev_part["day_part"]])
         fig.update_layout(**theme.PLOTLY_LAYOUT, height=340, showlegend=False)
         st.plotly_chart(fig, width='stretch')
-        st.caption("Share of gross revenue by day-part.")
+        st.caption("Share of gross revenue by day-part (always shows all day-parts for context).")
     with c2:
-        rev_dow_part = f_orders.groupby(["dow_name", "day_part"], as_index=False)["gross_sales"].sum()
+        rev_dow_part = part_orders.groupby(["dow_name", "day_part"], as_index=False)["gross_sales"].sum()
         rev_dow_part["dow_name"] = pd.Categorical(rev_dow_part["dow_name"], categories=dow_present_all, ordered=True)
         fig2 = px.bar(rev_dow_part.sort_values("dow_name"), x="dow_name", y="gross_sales", color="day_part",
                       color_discrete_map=theme.DAY_PART_COLOR, category_orders={"day_part": DAY_PART_ORDER})
         fig2.update_layout(**theme.PLOTLY_LAYOUT, height=340, xaxis_title=None, yaxis_title="Revenue (£)", legend_title=None)
         fig2.update_traces(hovertemplate="%{x}, %{fullData.name}<br>£%{y:,.0f}<extra></extra>")
         st.plotly_chart(fig2, width='stretch')
-        st.caption("Revenue by day of week, split by day-part.")
+        st.caption(f"Revenue by day of week{'' if focus_part in (None, 'All day-parts') else f' — {focus_part} only'}.")
 
     st.subheader(
         "Daily revenue trend", divider=True,
@@ -202,11 +241,13 @@ with tab_daypart:
              f"{end_date:%d %b %Y}) — too short a window to read seasonality from. More "
              "Square exports would extend this directly."
     )
-    daily = f_orders.groupby("date", as_index=False)["gross_sales"].sum()
+    daily = part_orders.groupby("date", as_index=False)["gross_sales"].sum()
     fig3 = px.line(daily, x="date", y="gross_sales", color_discrete_sequence=[theme.CAT_BLUE], markers=True)
     fig3.update_traces(hovertemplate="%{x|%a %d %b}<br>£%{y:,.0f}<extra></extra>", line=dict(width=2))
     fig3.update_layout(**theme.PLOTLY_LAYOUT, height=320, xaxis_title=None, yaxis_title="Revenue (£)")
     st.plotly_chart(fig3, width='stretch')
+    if focus_part and focus_part != "All day-parts":
+        st.caption(f"Revenue from {focus_part} only, by day.")
 
 # ---------------------------------------------------------------------------
 # Menu Performance
@@ -220,21 +261,43 @@ with tab_menu:
              "actual item cost."
     )
 
+    with st.expander("⚙️ Adjust estimated cost-of-sales assumptions"):
+        st.caption("Square doesn't export COGS — drag these to stress-test how sensitive the quadrant below is to the assumption.")
+        sc1, sc2, sc3 = st.columns(3)
+        food_cost_pct = sc1.slider("Food cost %", 15, 45, 30)
+        drink_cost_pct = sc2.slider("Drink cost %", 10, 40, 22)
+        dessert_cost_pct = sc3.slider("Dessert cost %", 10, 40, 24)
+    cost_map = {"Food": food_cost_pct / 100, "Drink": drink_cost_pct / 100, "Dessert": dessert_cost_pct / 100}
+
     cat_sel = st.pills("Filter by category", CATEGORY_ORDER, selection_mode="multi",
                         default=CATEGORY_ORDER, key="menu_cat") or []
     item_f = item_sales[item_sales["category_group"].isin(cat_sel)].copy()
+    item_f["margin_pct"] = 1 - item_f["category_group"].map(cost_map)
 
     c1, c2 = st.columns([1.1, 1])
     with c1:
         top15 = item_f.sort_values("units_sold", ascending=False).head(15).sort_values("units_sold")
         fig = px.bar(top15, x="units_sold", y="item_name", color="category_group", orientation="h",
                      color_discrete_map=theme.CATEGORY_COLOR, category_orders={"category_group": CATEGORY_ORDER})
-        fig.update_layout(**theme.PLOTLY_LAYOUT, height=460, xaxis_title="Units sold", yaxis_title=None, legend_title=None)
+        fig.update_layout(**theme.PLOTLY_LAYOUT, height=400, xaxis_title="Units sold", yaxis_title=None, legend_title=None)
         fig.update_traces(hovertemplate="%{y}<br>%{x:.0f} units<extra></extra>")
         st.plotly_chart(fig, width='stretch')
         st.caption("Top 15 items by units sold.")
+
+        lookup_options = ["—"] + sorted(item_f["item_name"].unique().tolist())
+        selected_item = st.selectbox("🔍 Look up an item", lookup_options, key="item_lookup")
+        if selected_item != "—":
+            row = item_f[item_f["item_name"] == selected_item].iloc[0]
+            ranked = item_f.sort_values("revenue", ascending=False).reset_index(drop=True)
+            rank = int(ranked.index[ranked["item_name"] == selected_item][0]) + 1
+            d1, d2 = st.columns(2)
+            d1.metric("Units sold", f"{row['units_sold']:.0f}", border=True)
+            d2.metric("Revenue", f"£{row['revenue']:,.0f}", border=True, help=f"Rank #{rank} by revenue in the current filter")
+            d3, d4 = st.columns(2)
+            d3.metric("Avg price", f"£{row['avg_unit_price']:,.2f}", border=True)
+            d4.metric("Margin", f"{row['margin_pct']:.0%}", border=True, icon="⚙️",
+                      help="Estimated — uses the adjustable cost-of-sales assumption above")
     with c2:
-        item_f = item_f.assign(margin_pct=item_f["est_margin"] / item_f["avg_unit_price"])
         avg_pop = item_f["units_sold"].median()
         avg_margin_pct = item_f["margin_pct"].median()
         fig2 = px.scatter(item_f, x="units_sold", y="margin_pct", color="category_group", size="revenue",

@@ -46,17 +46,28 @@ CATEGORY_ORDER = ["Food", "Drink", "Dessert"]
 
 
 @st.cache_data
-def load_real_data():
+def load_real_data(_cache_key: str):
     orders = pd.read_csv(REAL_DIR / "real_orders.csv", parse_dates=["date"])
     items = pd.read_csv(REAL_DIR / "real_item_sales.csv")
     return orders, items
 
 
 @st.cache_data
-def load_synthetic_staffing():
+def load_synthetic_staffing(_cache_key: str):
     staffing = pd.read_csv(SYNTHETIC_DIR / "staffing.csv", parse_dates=["date"])
     staffing["month"] = staffing["date"].dt.to_period("M").dt.to_timestamp()
     return staffing
+
+
+def _file_cache_key(*paths: Path) -> str:
+    """Streamlit Cloud can persist st.cache_data results to disk across
+    redeploys when a cached function's source code doesn't change — so a
+    data fix that only touches the CSV, not the loader function, can keep
+    serving the pre-fix result indefinitely. Passing each file's mtime as
+    an argument forces a fresh read whenever the file actually changes
+    (a new deploy re-clones the repo, giving new mtimes), while still
+    caching normally within one running instance."""
+    return "-".join(str(p.stat().st_mtime) for p in paths if p.exists())
 
 
 @st.cache_data(show_spinner="Parsing uploaded files…")
@@ -89,8 +100,10 @@ upload_error = None
 
 if data_source == "Demo restaurant":
     st.sidebar.caption("Real Square POS data · anonymised")
-    orders, item_sales = load_real_data()
-    staffing = load_synthetic_staffing()
+    orders, item_sales = load_real_data(_file_cache_key(
+        REAL_DIR / "real_orders.csv", REAL_DIR / "real_item_sales.csv"
+    ))
+    staffing = load_synthetic_staffing(_file_cache_key(SYNTHETIC_DIR / "staffing.csv"))
 else:
     st.sidebar.caption("Your Square POS data · processed in this session only, never saved")
     with st.sidebar.expander("📤 Upload your Square exports", expanded=True):

@@ -2,18 +2,21 @@
 
 Two data sources, selected in the sidebar:
 - Demo restaurant: this project's own real, anonymised Square POS export
-  (see src/load_square_data.py). Staffing/labour isn't wired to real data
-  yet (no Timecards export) — that tab runs on a modelled, clearly labelled
+  (see src/load_square_data.py). No real Timecards export exists for the
+  demo yet, so the Staffing tab runs on a modelled, clearly labelled
   synthetic year instead, to demonstrate the analysis approach.
-- Upload your own: a visitor's own Square exports, parsed in-session via
-  square_parser.py (same PII-stripping logic as the demo data). No
-  Staffing tab, since the synthetic model is specific to the demo dataset.
+- Upload your own: a visitor's own Square exports (Item Sales,
+  Transactions, and/or Timecards), parsed in-session via square_parser.py
+  (same PII-stripping logic as the demo data — employee names/IDs are
+  never read into the output). A real Timecards upload drives a real
+  Staffing tab, not the synthetic model.
 """
 
 import datetime as dt
 import io
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -21,7 +24,13 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 import theme
-from square_parser import SquareFileError, clean_item_sales, clean_transactions, read_square_csv
+from square_parser import (
+    SquareFileError,
+    clean_item_sales,
+    clean_timecards,
+    clean_transactions,
+    read_square_csv,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -50,12 +59,13 @@ def load_synthetic_staffing():
 
 
 @st.cache_data(show_spinner="Parsing uploaded files…")
-def load_uploaded_data(item_bytes, item_name, txn_bytes, txn_name):
+def load_uploaded_data(item_bytes, item_name, txn_bytes, txn_name, labour_bytes, labour_name):
     """Cache key is the raw bytes + filename, so re-running with the same
     upload doesn't re-parse, but a new file does."""
     items = clean_item_sales(read_square_csv(io.BytesIO(item_bytes))) if item_bytes else None
     orders = clean_transactions(read_square_csv(io.BytesIO(txn_bytes))) if txn_bytes else None
-    return orders, items
+    labour = clean_timecards(read_square_csv(io.BytesIO(labour_bytes))) if labour_bytes else None
+    return orders, items, labour
 
 
 if not (REAL_DIR / "real_orders.csv").exists():
@@ -72,7 +82,7 @@ data_source = st.sidebar.radio(
     help="Analyse this project's real (anonymised) demo data, or upload your own restaurant's Square exports."
 )
 
-orders = item_sales = None
+orders = item_sales = labour = None
 staffing = None
 upload_error = None
 
@@ -97,17 +107,24 @@ else:
                 "1. Go to the **Transactions** tab\n"
                 "2. Set the same date range\n"
                 "3. Click **Export** → CSV\n\n"
-                "Both are optional but complementary — upload whichever you have; "
-                "more history gives more reliable patterns than a short window."
+                "**Timecards export** — unlocks a real (not modelled) Staffing tab\n"
+                "1. Go to **Team → Timecards** (or **Reports → Labor**, naming varies by account)\n"
+                "2. Set the same date range\n"
+                "3. Click **Export** → CSV\n\n"
+                "All three are optional but complementary — upload whichever you have; "
+                "more history gives more reliable patterns than a short window. Labour "
+                "cost as a % of revenue needs both Timecards and Transactions uploaded."
             )
         item_file = st.file_uploader("Item Sales export (CSV)", type=["csv"], key="item_upload")
         txn_file = st.file_uploader("Transactions export (CSV)", type=["csv"], key="txn_upload")
+        labour_file = st.file_uploader("Timecards / Labour export (CSV)", type=["csv"], key="labour_upload")
 
-    if item_file or txn_file:
+    if item_file or txn_file or labour_file:
         try:
-            orders, item_sales = load_uploaded_data(
+            orders, item_sales, labour = load_uploaded_data(
                 item_file.getvalue() if item_file else None, item_file.name if item_file else None,
                 txn_file.getvalue() if txn_file else None, txn_file.name if txn_file else None,
+                labour_file.getvalue() if labour_file else None, labour_file.name if labour_file else None,
             )
         except SquareFileError as e:
             upload_error = str(e)
@@ -115,17 +132,18 @@ else:
     if upload_error:
         st.error(f"Couldn't process that upload: {upload_error}")
         st.stop()
-    if orders is None and item_sales is None:
+    if orders is None and item_sales is None and labour is None:
         st.info(
             "⬆️ Upload at least one Square export in the sidebar to get started — an Item Sales "
             "export unlocks Menu Performance, a Transactions export unlocks Peak Trading Hours "
-            "and Revenue by Day-part. Nothing you upload is saved or sent anywhere outside this "
-            "browser session."
+            "and Revenue by Day-part, and a Timecards export unlocks a real Staffing tab. "
+            "Nothing you upload is saved or sent anywhere outside this browser session."
         )
         st.stop()
 
 has_orders = orders is not None and not orders.empty
 has_items = item_sales is not None and not item_sales.empty
+has_labour = labour is not None and not labour.empty
 
 # ---------------------------------------------------------------------------
 # Sidebar filters
@@ -172,6 +190,13 @@ else:
                                       "gross_sales", "net_sales", "tax", "tip", "table_number", "source"])
     f_orders["date"] = pd.to_datetime(f_orders["date"])
 
+if has_labour:
+    labour_mask = (labour["date"].dt.date >= start_date) & (labour["date"].dt.date <= end_date) \
+        & (labour["dow_name"].isin(dow_sel))
+    f_labour = labour[labour_mask].copy()
+else:
+    f_labour = pd.DataFrame(columns=["shift_id", "date", "dow_name", "day_part", "job", "hours", "labor_cost"])
+
 st.sidebar.divider()
 if data_source == "Demo restaurant":
     with st.sidebar.expander("ℹ️ About this project"):
@@ -191,8 +216,10 @@ else:
         st.markdown(
             "Uploaded files are parsed in memory for this browser session only — "
             "nothing is written to disk or shared with anyone else using this app. "
-            "Staff names, customer details, card and device info are stripped at "
-            "parse time, before anything is charted — see `src/square_parser.py`.\n\n"
+            "Staff/employee names, customer details, card and device info are "
+            "stripped at parse time, before anything is charted — including from "
+            "a Timecards upload, where employee identity is dropped entirely and "
+            "shifts are only ever shown in aggregate. See `src/square_parser.py`.\n\n"
             "Refreshing the page or closing this tab clears the upload; there's "
             "nothing to delete afterwards."
         )
@@ -231,18 +258,14 @@ if has_orders:
               help="Distinct calendar days with at least one transaction, in the current filter")
 else:
     n_days = 0
-    st.caption("No Transactions export uploaded yet — showing Menu Performance from your Item Sales export only.")
+    st.caption("No Transactions export uploaded yet — showing whichever tabs your other uploads unlock.")
 
 st.divider()
 
-tab_labels = ["⏰ Peak Trading Hours", "📅 Revenue by Day-part", "🍴 Menu Performance"]
-if data_source == "Demo restaurant":
-    tab_labels.append("👥 Staffing (illustrative)")
-tab_labels.append("📋 Data")
+staff_tab_label = "👥 Staffing (illustrative)" if data_source == "Demo restaurant" else "👥 Staffing"
+tab_labels = ["⏰ Peak Trading Hours", "📅 Revenue by Day-part", "🍴 Menu Performance", staff_tab_label, "📋 Data"]
 _tabs = st.tabs(tab_labels)
-tab_peak, tab_daypart, tab_menu = _tabs[0], _tabs[1], _tabs[2]
-tab_staff = _tabs[3] if data_source == "Demo restaurant" else None
-tab_data = _tabs[-1]
+tab_peak, tab_daypart, tab_menu, tab_staff, tab_data = _tabs
 
 # ---------------------------------------------------------------------------
 # Peak Trading Hours
@@ -450,9 +473,10 @@ with tab_menu:
         )
 
 # ---------------------------------------------------------------------------
-# Staffing (illustrative) — demo dataset only, tab doesn't exist on uploads
+# Staffing — synthetic model for the demo dataset, real analysis when a
+# Timecards file has been uploaded
 # ---------------------------------------------------------------------------
-def _render_staffing_tab():
+def _render_synthetic_staffing_tab():
     st.warning(
         "⚠️ **Illustrative model, not real data.** Square Timecards haven't been exported yet, "
         "so this tab runs on a synthetic full year (see `src/generate_data.py`) to demonstrate "
@@ -498,9 +522,108 @@ def _render_staffing_tab():
     )
 
 
-if tab_staff is not None:
-    with tab_staff:
-        _render_staffing_tab()
+def _render_real_staffing_tab(f_labour, f_orders, has_orders):
+    has_cost = f_labour["labor_cost"].notna().any()
+    total_hours = f_labour["hours"].sum()
+    n_shifts = len(f_labour)
+    avg_hours = total_hours / n_shifts if n_shifts else 0
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Total hours", f"{total_hours:,.1f}", icon="⏱️", border=True)
+    k2.metric("Shifts", f"{n_shifts:,}", icon="🧑‍🍳", border=True,
+              help="One row per clocked shift in the Timecards export")
+    k3.metric("Avg hours / shift", f"{avg_hours:,.1f}", icon="📏", border=True)
+
+    if has_cost:
+        total_cost = f_labour["labor_cost"].sum()
+        k4, k5 = st.columns(2)
+        k4.metric("Total labour cost", f"£{total_cost:,.0f}", icon="💷", border=True)
+        if has_orders and f_orders["gross_sales"].sum() > 0:
+            pct = total_cost / f_orders["gross_sales"].sum()
+            k5.metric("Labour cost (% of revenue)", f"{pct:.1%}", icon="📊", border=True,
+                      help="Total labour cost ÷ total revenue across the current filters")
+        else:
+            k5.metric("Labour cost (% of revenue)", "—", icon="📊", border=True,
+                      help="Upload a Transactions export too, to compute this")
+    else:
+        st.caption(
+            "No hourly rate or total pay column found in your Timecards export — "
+            "showing hours only, not £ cost."
+        )
+
+    st.subheader("When is labour scheduled?", divider=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        by_part = f_labour.groupby("day_part", as_index=False)["hours"].sum()
+        part_order_present = [p for p in DAY_PART_ORDER + ["Unknown"] if p in by_part["day_part"].unique()]
+        by_part = by_part.set_index("day_part").reindex(part_order_present).reset_index()
+        color_map = {**theme.DAY_PART_COLOR, "Unknown": theme.INK_MUTED}
+        fig = px.bar(by_part, x="day_part", y="hours", color="day_part", color_discrete_map=color_map)
+        fig.update_layout(**theme.PLOTLY_LAYOUT, height=320, xaxis_title=None, yaxis_title="Hours", showlegend=False)
+        fig.update_traces(hovertemplate="%{x}<br>%{y:.1f} hours<extra></extra>")
+        st.plotly_chart(fig, width='stretch')
+        st.caption(
+            "Total scheduled hours by day-part."
+            + (" (\"Unknown\" = no clock-in time in the export.)" if "Unknown" in part_order_present else "")
+        )
+    with c2:
+        by_dow = f_labour.groupby("dow_name", as_index=False)["hours"].sum()
+        dow_order_present = [d for d in DOW_ORDER if d in by_dow["dow_name"].unique()]
+        by_dow["dow_name"] = pd.Categorical(by_dow["dow_name"], categories=dow_order_present, ordered=True)
+        fig2 = px.bar(by_dow.sort_values("dow_name"), x="dow_name", y="hours", color_discrete_sequence=[theme.CAT_VIOLET])
+        fig2.update_layout(**theme.PLOTLY_LAYOUT, height=320, xaxis_title=None, yaxis_title="Hours")
+        fig2.update_traces(hovertemplate="%{x}<br>%{y:.1f} hours<extra></extra>")
+        st.plotly_chart(fig2, width='stretch')
+        st.caption("Total scheduled hours by day of week.")
+
+    if (f_labour["job"] != "Unspecified").any():
+        st.subheader("Hours by role", divider=True)
+        by_job = f_labour.groupby("job", as_index=False)["hours"].sum().sort_values("hours", ascending=False)
+        fig3 = px.bar(by_job, x="hours", y="job", orientation="h", color_discrete_sequence=[theme.CAT_BLUE])
+        fig3.update_layout(**theme.PLOTLY_LAYOUT, height=max(240, 40 * len(by_job)),
+                            xaxis_title="Hours", yaxis_title=None)
+        fig3.update_traces(hovertemplate="%{y}<br>%{x:.1f} hours<extra></extra>")
+        st.plotly_chart(fig3, width='stretch')
+
+    if not has_orders:
+        st.info("⬆️ Upload a Transactions export too, to see labour cost as a % of revenue over time.")
+    elif not has_cost:
+        st.info("No pay/rate column in this Timecards export, so labour cost can't be compared to revenue.")
+    else:
+        st.subheader(
+            "Labour cost vs revenue, by day", divider=True,
+            help="Two panels sharing a date axis rather than one dual-axis chart — revenue and labour "
+                 "% of revenue are on different scales, so overlaying them on a single axis would distort one of them."
+        )
+        daily_labour = f_labour.groupby("date", as_index=False)["labor_cost"].sum()
+        daily_rev = f_orders.groupby("date", as_index=False)["gross_sales"].sum()
+        merged = daily_rev.merge(daily_labour, on="date", how="outer").fillna(0).sort_values("date")
+        merged["labor_pct"] = (merged["labor_cost"] / merged["gross_sales"]).replace([np.inf, -np.inf], np.nan)
+
+        fig4 = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.5, 0.5], vertical_spacing=0.1,
+                              subplot_titles=("Revenue", "Labour cost as % of revenue"))
+        fig4.add_trace(go.Scatter(x=merged["date"], y=merged["gross_sales"], mode="lines+markers",
+                                   line=dict(color=theme.CAT_BLUE, width=2),
+                                   hovertemplate="%{x|%d %b}<br>£%{y:,.0f}<extra></extra>"), row=1, col=1)
+        fig4.add_trace(go.Scatter(x=merged["date"], y=merged["labor_pct"] * 100, mode="lines+markers",
+                                   line=dict(color=theme.CAT_ORANGE, width=2),
+                                   hovertemplate="%{x|%d %b}<br>%{y:.1f}%% labour<extra></extra>"), row=2, col=1)
+        fig4.add_hrect(y0=25, y1=32, line_width=0, fillcolor=theme.CAT_AQUA, opacity=0.10, row=2, col=1,
+                       annotation_text="healthy range", annotation_position="top left", annotation_font_color=theme.INK_MUTED)
+        fig4.update_layout(**{k: v for k, v in theme.PLOTLY_LAYOUT.items() if k not in ("xaxis", "yaxis")},
+                            height=460, showlegend=False)
+        fig4.update_xaxes(gridcolor=theme.GRIDLINE, linecolor=theme.BASELINE)
+        fig4.update_yaxes(gridcolor=theme.GRIDLINE, linecolor=theme.BASELINE)
+        st.plotly_chart(fig4, width='stretch')
+
+
+with tab_staff:
+    if data_source == "Demo restaurant":
+        _render_synthetic_staffing_tab()
+    elif has_labour:
+        _render_real_staffing_tab(f_labour, f_orders, has_orders)
+    else:
+        st.info("⬆️ Upload a Timecards export in the sidebar to see this.")
 
 # ---------------------------------------------------------------------------
 # Data tab
@@ -512,7 +635,7 @@ with tab_data:
              "cleaning and anonymisation logic (staff names, customer IDs, card/device "
              "details are dropped at parse time and never shown here)."
     )
-    d1, d2 = st.columns(2)
+    d1, d2, d3 = st.columns(3)
     with d1:
         st.markdown("**Transactions (filtered)**")
         if has_orders:
@@ -527,3 +650,11 @@ with tab_data:
             st.dataframe(item_sales, width='stretch', hide_index=True, height=300)
         else:
             st.info("No Item Sales export uploaded.")
+    with d3:
+        st.markdown("**Shifts (filtered)**")
+        if has_labour:
+            st.dataframe(f_labour, width='stretch', hide_index=True, height=300)
+            st.download_button("Download filtered shifts (CSV)", f_labour.to_csv(index=False),
+                                "shifts_filtered.csv", "text/csv")
+        else:
+            st.info("No Timecards export uploaded.")

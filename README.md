@@ -11,9 +11,12 @@ withheld.
 
 The app also works for **any other Square POS user**: switch "Data source"
 to "Upload your own" in the sidebar and drop in your own Item Sales /
-Transactions exports — same charts, same anonymisation, your numbers.
-Nothing uploaded is saved anywhere; it's parsed in memory for that browser
-session only.
+Transactions / Timecards exports — same charts, same anonymisation, your
+numbers. A Timecards upload drives a **real** Staffing tab (labour cost,
+hours by day-part/role, labour cost as % of revenue), not the demo's
+synthetic model. Nothing uploaded is saved anywhere; it's parsed in memory
+for that browser session only, and employee identity is dropped entirely —
+shifts are only ever shown in aggregate.
 
 ## Data
 
@@ -80,10 +83,14 @@ turned into a measurable, filterable tool.
   menu-engineering quadrant (popularity vs. estimated margin — Stars/
   Plowhorses/Puzzles/Dogs) with live-adjustable cost-of-sales sliders, and a
   searchable item lookup with a detail card.
-- **Staffing (illustrative, demo dataset only)** — clearly flagged as a
-  modelled placeholder until real Timecards data is available; shows the
-  staffing-lag analysis method on a synthetic year. Not shown when analysing
-  an uploaded file, since the model is specific to the demo restaurant.
+- **Staffing** — on the demo dataset, clearly flagged as a modelled
+  placeholder (no real Timecards export exists for it yet), showing the
+  staffing-lag analysis method on a synthetic year. On an upload with a
+  Timecards file, this becomes real: total hours and labour cost, hours by
+  day-part/day-of-week/role, and — if a Transactions export was uploaded
+  too — labour cost as a % of revenue over time. Works from just hours if
+  the export has no pay/rate column, degrading gracefully rather than
+  hiding the tab entirely.
 - Sidebar filters (date range with quick presets, day of week, day-part)
   apply across every data-driven tab.
 
@@ -168,3 +175,13 @@ restaurant-ops-dashboard/
   project's own data fall back to a keyword heuristic (wine/beer/coffee →
   Drink, cake/gelato → Dessert, else Food) rather than defaulting everything
   uploaded to one bucket.
+- **Timecards parsing** (`src/square_parser.py: clean_timecards`) — Square's
+  Timecards/Labor export column names are less standardised than Sales or
+  Transactions (naming has shifted over time and by account), so fields are
+  matched by a list of plausible candidate names case-insensitively rather
+  than one fixed schema. Only a date column plus either hours-worked or a
+  clock-in/clock-out pair are required; job title and pay/rate are optional
+  and the tab degrades gracefully without them (hours-only view instead of
+  £ cost). No employee-identifying column is ever read into the output — it
+  simply isn't selected — and rows are renumbered to an anonymous
+  `shift_id`, mirroring how Transactions handles the original Transaction ID.

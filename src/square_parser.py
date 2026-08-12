@@ -190,6 +190,95 @@ def clean_item_sales(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _find_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    """Case-insensitive match against a list of possible column names.
+    Timecards exports aren't as standardised as the Sales/Transactions
+    reports — Square's own naming has shifted over time and third-party
+    time-tracking add-ons vary more, so this matches by intent rather than
+    one fixed spelling."""
+    lower_map = {str(c).strip().lower(): c for c in df.columns}
+    for candidate in candidates:
+        if candidate.lower() in lower_map:
+            return lower_map[candidate.lower()]
+    return None
+
+
+TIMECARD_DATE_CANDIDATES = ["Date", "Clock-in Date", "Clock in Date", "Shift Date", "Work Date"]
+TIMECARD_CLOCKIN_CANDIDATES = ["Clock-in Time", "Clock in Time", "Start Time", "Time In", "Clock In"]
+TIMECARD_CLOCKOUT_CANDIDATES = ["Clock-out Time", "Clock out Time", "End Time", "Time Out", "Clock Out"]
+TIMECARD_HOURS_CANDIDATES = ["Total Hours", "Hours Worked", "Hours", "Net Hours"]
+TIMECARD_JOB_CANDIDATES = ["Job Title", "Job", "Role", "Team Member Job Title", "Position"]
+TIMECARD_RATE_CANDIDATES = ["Hourly Rate", "Wage", "Rate", "Pay Rate"]
+TIMECARD_PAY_CANDIDATES = ["Total Pay", "Gross Pay", "Pay", "Total Cost"]
+
+
+def clean_timecards(df: pd.DataFrame) -> pd.DataFrame:
+    """Clean a Square Timecards/labour export. Column names vary more here
+    than Sales/Transactions, so fields are matched by candidate name rather
+    than a single required schema. Only date + (hours or clock-in/out) are
+    truly required; job title and cost fields degrade gracefully if absent.
+
+    Employee name/ID is never read into the output — whatever column
+    identifies the person is simply not selected, replaced by an anonymous
+    sequential shift_id, the same anonymisation approach as transactions."""
+    date_col = _find_column(df, TIMECARD_DATE_CANDIDATES)
+    if date_col is None:
+        raise SquareFileError(
+            "This doesn't look like a Timecards export — couldn't find a date column "
+            f"(tried {', '.join(TIMECARD_DATE_CANDIDATES)}). Found: {', '.join(df.columns[:10])}"
+            f"{', ...' if len(df.columns) > 10 else ''}."
+        )
+
+    df = df.copy()
+    df["date"] = pd.to_datetime(df[date_col], errors="coerce")
+    df = df[df["date"].notna()].copy()
+    if df.empty:
+        raise SquareFileError("No valid dates found in this Timecards export.")
+    df["dow_name"] = df["date"].dt.day_name()
+
+    hours_col = _find_column(df, TIMECARD_HOURS_CANDIDATES)
+    clockin_col = _find_column(df, TIMECARD_CLOCKIN_CANDIDATES)
+    clockout_col = _find_column(df, TIMECARD_CLOCKOUT_CANDIDATES)
+
+    if hours_col is not None:
+        df["hours"] = pd.to_numeric(df[hours_col], errors="coerce").fillna(0.0)
+    elif clockin_col is not None and clockout_col is not None:
+        clock_in = pd.to_datetime(df[date_col].astype(str) + " " + df[clockin_col].astype(str), errors="coerce")
+        clock_out = pd.to_datetime(df[date_col].astype(str) + " " + df[clockout_col].astype(str), errors="coerce")
+        overnight = (clock_out < clock_in).fillna(False)
+        clock_out = clock_out + pd.to_timedelta(overnight.astype(int), unit="D")
+        df["hours"] = ((clock_out - clock_in).dt.total_seconds() / 3600).clip(lower=0, upper=16).fillna(0.0)
+    else:
+        raise SquareFileError(
+            "Couldn't find hours worked or clock-in/clock-out times in this file — is this a "
+            f"Square Timecards export? Found: {', '.join(df.columns[:10])}{', ...' if len(df.columns) > 10 else ''}."
+        )
+
+    if clockin_col is not None:
+        clock_in_dt = pd.to_datetime(df[date_col].astype(str) + " " + df[clockin_col].astype(str), errors="coerce")
+        df["hour"] = clock_in_dt.dt.hour
+        df["day_part"] = df["hour"].apply(lambda h: hour_to_day_part(h) if pd.notna(h) else "Unknown")
+    else:
+        df["day_part"] = "Unknown"
+
+    job_col = _find_column(df, TIMECARD_JOB_CANDIDATES)
+    df["job"] = df[job_col].astype(str).str.strip() if job_col is not None else "Unspecified"
+
+    rate_col = _find_column(df, TIMECARD_RATE_CANDIDATES)
+    pay_col = _find_column(df, TIMECARD_PAY_CANDIDATES)
+    if pay_col is not None:
+        df["labor_cost"] = money(df[pay_col])
+    elif rate_col is not None:
+        df["labor_cost"] = money(df[rate_col]) * df["hours"]
+    else:
+        df["labor_cost"] = np.nan  # hours still usable; cost charts will note it's unavailable
+
+    df = df.sort_values("date").reset_index(drop=True)
+    df["shift_id"] = df.index + 1  # anonymous — replaces whatever employee name/ID column existed
+
+    return df[["shift_id", "date", "dow_name", "day_part", "job", "hours", "labor_cost"]]
+
+
 def clean_transactions(df: pd.DataFrame) -> pd.DataFrame:
     require_columns(df, TRANSACTIONS_REQUIRED, "Transactions")
     df = df.copy()

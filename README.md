@@ -9,6 +9,12 @@ day-to-day operations. The business's name is intentionally left out of this
 project; everything shown here is real trading data with only the name
 withheld.
 
+The app also works for **any other Square POS user**: switch "Data source"
+to "Upload your own" in the sidebar and drop in your own Item Sales /
+Transactions exports — same charts, same anonymisation, your numbers.
+Nothing uploaded is saved anywhere; it's parsed in memory for that browser
+session only.
+
 ## Data
 
 Two Square Dashboard exports cover 17–31 Jul 2026 (15 trading days):
@@ -62,19 +68,24 @@ turned into a measurable, filterable tool.
 
 ## What's in the dashboard
 
-- **Peak Trading Hours** — an hour × day-of-week heatmap of transaction
-  volume, plus totals by hour and by busiest table, from the real 15-day
-  window.
+- **Peak Trading Hours** — transactions by hour, one small bar-chart panel
+  per day of week (deliberately not a heatmap — a grid of bars reads more
+  precisely than colour intensity), plus totals by hour and busiest tables.
+  A "Focus on a day" filter drills into a single day of week.
 - **Revenue by Day-part** — share of revenue by Breakfast/Lunch/Afternoon/
-  Dinner, split by day of week, and a daily revenue trend.
-- **Menu Performance** — top sellers by units (from the real Item Sales
-  report), and a menu-engineering quadrant (popularity vs. estimated margin)
-  splitting items into Stars, Plowhorses, Puzzles, and Dogs.
-- **Staffing (illustrative)** — clearly flagged as a modelled placeholder
-  until real Timecards data is available; shows the staffing-lag analysis
-  method on a synthetic year.
-- Sidebar filters (date range, day of week, day-part) apply across the real-
-  data tabs.
+  Dinner, split by day of week, and a daily revenue trend. A "Focus on a
+  day-part" filter isolates one part across all three charts.
+- **Menu Performance** — a **Best sellers / Worst sellers** toggle over
+  units sold (the worst-sellers view is the "candidates to cut" list), a
+  menu-engineering quadrant (popularity vs. estimated margin — Stars/
+  Plowhorses/Puzzles/Dogs) with live-adjustable cost-of-sales sliders, and a
+  searchable item lookup with a detail card.
+- **Staffing (illustrative, demo dataset only)** — clearly flagged as a
+  modelled placeholder until real Timecards data is available; shows the
+  staffing-lag analysis method on a synthetic year. Not shown when analysing
+  an uploaded file, since the model is specific to the demo restaurant.
+- Sidebar filters (date range with quick presets, day of week, day-part)
+  apply across every data-driven tab.
 
 ## Tech stack
 
@@ -106,11 +117,14 @@ Opens at `http://localhost:8501`.
 ```
 restaurant-ops-dashboard/
 ├── src/
-│   ├── load_square_data.py  # real Square export loader + anonymiser
+│   ├── square_parser.py     # shared Square CSV parsing/cleaning/anonymising —
+│   │                        # used by both load_square_data.py and app.py uploads
+│   ├── load_square_data.py  # demo dataset loader (reads data/raw/, applies
+│   │                        # square_parser.py + this project's own name redaction)
 │   ├── generate_data.py     # synthetic staffing/demand model (illustrative tab only)
 │   ├── export_bi.py         # star-schema export for Power BI / Tableau
 │   ├── theme.py             # shared chart color palette
-│   └── app.py                # Streamlit dashboard
+│   └── app.py                # Streamlit dashboard (demo data + upload-your-own)
 ├── data/
 │   ├── raw/                 # original Square exports — gitignored, local only
 │   ├── real/                # cleaned, anonymised real data (tracked)
@@ -143,3 +157,14 @@ restaurant-ops-dashboard/
   average for each (weekday, day-part), which is what produces the
   understaffed-ramp / overstaffed-drop-off pattern the tab highlights. See
   `src/generate_data.py` for the full demand + staffing model.
+- **Upload-your-own robustness** (`src/square_parser.py`) — Square exports
+  vary: this project's own files are UTF-16 tab-delimited with a BOM, but
+  other accounts/regions export UTF-8 comma-delimited. The loader checks for
+  a UTF-16 BOM explicitly rather than guessing by trial-and-error (blindly
+  trying `.decode("utf-16")` on arbitrary bytes rarely raises an error — it
+  just silently produces garbage — so encoding detection order matters).
+  Missing/malformed files raise a specific, readable error in the app
+  instead of a stack trace. Category names Square doesn't ship in this
+  project's own data fall back to a keyword heuristic (wine/beer/coffee →
+  Drink, cake/gelato → Dessert, else Food) rather than defaulting everything
+  uploaded to one bucket.

@@ -1,12 +1,17 @@
 """Restaurant Operations Analytics Dashboard.
 
-Built on real, anonymised Square POS exports (see src/load_square_data.py):
-15 trading days, 17-31 Jul 2026. Staffing/labour is not yet wired to real
-data (Square Timecards not exported) — that tab runs on a modelled, clearly
-labelled synthetic year instead, to demonstrate the analysis approach.
+Two data sources, selected in the sidebar:
+- Demo restaurant: this project's own real, anonymised Square POS export
+  (see src/load_square_data.py). Staffing/labour isn't wired to real data
+  yet (no Timecards export) — that tab runs on a modelled, clearly labelled
+  synthetic year instead, to demonstrate the analysis approach.
+- Upload your own: a visitor's own Square exports, parsed in-session via
+  square_parser.py (same PII-stripping logic as the demo data). No
+  Staffing tab, since the synthetic model is specific to the demo dataset.
 """
 
 import datetime as dt
+import io
 from pathlib import Path
 
 import pandas as pd
@@ -16,6 +21,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 import theme
+from square_parser import SquareFileError, clean_item_sales, clean_transactions, read_square_csv
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -43,23 +49,95 @@ def load_synthetic_staffing():
     return staffing
 
 
+@st.cache_data(show_spinner="Parsing uploaded files…")
+def load_uploaded_data(item_bytes, item_name, txn_bytes, txn_name):
+    """Cache key is the raw bytes + filename, so re-running with the same
+    upload doesn't re-parse, but a new file does."""
+    items = clean_item_sales(read_square_csv(io.BytesIO(item_bytes))) if item_bytes else None
+    orders = clean_transactions(read_square_csv(io.BytesIO(txn_bytes))) if txn_bytes else None
+    return orders, items
+
+
 if not (REAL_DIR / "real_orders.csv").exists():
-    st.error("Real data not found. Run `python src/load_square_data.py` first (needs the raw exports in data/raw/).")
+    st.error("Demo data not found. Run `python src/load_square_data.py` first (needs the raw exports in data/raw/).")
     st.stop()
 
-orders, item_sales = load_real_data()
-staffing = load_synthetic_staffing()
+# ---------------------------------------------------------------------------
+# Data source: bundled demo restaurant, or a visitor's own Square export
+# ---------------------------------------------------------------------------
+st.sidebar.title("🍽️ Restaurant Ops")
+
+data_source = st.sidebar.radio(
+    "Data source", ["Demo restaurant", "Upload your own"], key="data_source",
+    help="Analyse this project's real (anonymised) demo data, or upload your own restaurant's Square exports."
+)
+
+orders = item_sales = None
+staffing = None
+upload_error = None
+
+if data_source == "Demo restaurant":
+    st.sidebar.caption("Real Square POS data · anonymised")
+    orders, item_sales = load_real_data()
+    staffing = load_synthetic_staffing()
+else:
+    st.sidebar.caption("Your Square POS data · processed in this session only, never saved")
+    with st.sidebar.expander("📤 Upload your Square exports", expanded=True):
+        with st.expander("❓ Where do I get these files?"):
+            st.markdown(
+                "From **[squareup.com/dashboard](https://squareup.com/dashboard)** on desktop "
+                "(exporting works better there than the mobile app):\n\n"
+                "**Item Sales export** — unlocks the Menu Performance tab\n"
+                "1. Go to **Reports → Sales**\n"
+                "2. Filter the breakdown by **Item**\n"
+                "3. Set the date range to as much history as you have (a full year "
+                "if possible, to capture seasonality)\n"
+                "4. Click **Export** → CSV\n\n"
+                "**Transactions export** — unlocks Peak Trading Hours and Revenue by Day-part\n"
+                "1. Go to the **Transactions** tab\n"
+                "2. Set the same date range\n"
+                "3. Click **Export** → CSV\n\n"
+                "Both are optional but complementary — upload whichever you have; "
+                "more history gives more reliable patterns than a short window."
+            )
+        item_file = st.file_uploader("Item Sales export (CSV)", type=["csv"], key="item_upload")
+        txn_file = st.file_uploader("Transactions export (CSV)", type=["csv"], key="txn_upload")
+
+    if item_file or txn_file:
+        try:
+            orders, item_sales = load_uploaded_data(
+                item_file.getvalue() if item_file else None, item_file.name if item_file else None,
+                txn_file.getvalue() if txn_file else None, txn_file.name if txn_file else None,
+            )
+        except SquareFileError as e:
+            upload_error = str(e)
+
+    if upload_error:
+        st.error(f"Couldn't process that upload: {upload_error}")
+        st.stop()
+    if orders is None and item_sales is None:
+        st.info(
+            "⬆️ Upload at least one Square export in the sidebar to get started — an Item Sales "
+            "export unlocks Menu Performance, a Transactions export unlocks Peak Trading Hours "
+            "and Revenue by Day-part. Nothing you upload is saved or sent anywhere outside this "
+            "browser session."
+        )
+        st.stop()
+
+has_orders = orders is not None and not orders.empty
+has_items = item_sales is not None and not item_sales.empty
 
 # ---------------------------------------------------------------------------
 # Sidebar filters
 # ---------------------------------------------------------------------------
-st.sidebar.title("🍽️ Restaurant Ops")
-st.sidebar.caption("Real Square POS data · anonymised")
-
-min_date, max_date = orders["date"].min().date(), orders["date"].max().date()
+if has_orders:
+    min_date, max_date = orders["date"].min().date(), orders["date"].max().date()
+else:
+    min_date = max_date = dt.date.today()
 
 preset = st.sidebar.segmented_control(
-    "Quick range", ["All data", "Last 7 days", "Custom"], default="All data", width="stretch"
+    "Quick range", ["All data", "Last 7 days", "Custom"], default="All data", width="stretch",
+    disabled=not has_orders,
 )
 if preset == "Last 7 days":
     preset_start = max(min_date, max_date - dt.timedelta(days=6))
@@ -68,131 +146,164 @@ else:
 
 date_range = st.sidebar.date_input(
     "Date range", value=(preset_start, max_date), min_value=min_date, max_value=max_date,
-    key=f"date_input_{preset}",
+    key=f"date_input_{preset}", disabled=not has_orders,
 )
 if isinstance(date_range, tuple) and len(date_range) == 2:
     start_date, end_date = date_range
 else:
     start_date, end_date = min_date, max_date
 
-dow_present_all = [d for d in DOW_ORDER if d in orders["dow_name"].unique()]
+dow_present_all = [d for d in DOW_ORDER if d in orders["dow_name"].unique()] if has_orders else []
 dow_sel = st.sidebar.pills("Day of week", dow_present_all, selection_mode="multi",
-                            default=dow_present_all, width="stretch")
+                            default=dow_present_all, width="stretch", disabled=not has_orders)
 part_sel = st.sidebar.pills("Day-part", DAY_PART_ORDER, selection_mode="multi",
-                             default=DAY_PART_ORDER, width="stretch")
+                             default=DAY_PART_ORDER, width="stretch", disabled=not has_orders)
 dow_sel = dow_sel or []
 part_sel = part_sel or []
 
-mask = (
-    (orders["date"].dt.date >= start_date) & (orders["date"].dt.date <= end_date)
-    & (orders["dow_name"].isin(dow_sel)) & (orders["day_part"].isin(part_sel))
-)
-f_orders = orders[mask].copy()
+if has_orders:
+    mask = (
+        (orders["date"].dt.date >= start_date) & (orders["date"].dt.date <= end_date)
+        & (orders["dow_name"].isin(dow_sel)) & (orders["day_part"].isin(part_sel))
+    )
+    f_orders = orders[mask].copy()
+else:
+    f_orders = pd.DataFrame(columns=["order_id", "date", "time", "hour", "dow_name", "day_part",
+                                      "gross_sales", "net_sales", "tax", "tip", "table_number", "source"])
+    f_orders["date"] = pd.to_datetime(f_orders["date"])
 
 st.sidebar.divider()
-with st.sidebar.expander("ℹ️ About this project"):
-    st.markdown(
-        "Built on real, anonymised Square POS exports from an independent "
-        "restaurant I help run (17–31 Jul 2026 — the export window available "
-        "so far; the business name is intentionally left out). Staff names, "
-        "customer details, card and device info are stripped at load time "
-        "and never stored in this repo — see `src/load_square_data.py`.\n\n"
-        "Staffing/labour isn't wired to real data yet (no Timecards export "
-        "available) — that tab uses a clearly-marked illustrative model."
-    )
+if data_source == "Demo restaurant":
+    with st.sidebar.expander("ℹ️ About this project"):
+        st.markdown(
+            "Built on real, anonymised Square POS exports from an independent "
+            "restaurant I help run (17–31 Jul 2026 — the export window available "
+            "so far; the business name is intentionally left out). Staff names, "
+            "customer details, card and device info are stripped at load time "
+            "and never stored in this repo — see `src/load_square_data.py`.\n\n"
+            "Staffing/labour isn't wired to real data yet (no Timecards export "
+            "available) — that tab uses a clearly-marked illustrative model.\n\n"
+            "Want to try this on your own restaurant's data? Switch **Data source** "
+            "above to \"Upload your own\"."
+        )
+else:
+    with st.sidebar.expander("ℹ️ About your data"):
+        st.markdown(
+            "Uploaded files are parsed in memory for this browser session only — "
+            "nothing is written to disk or shared with anyone else using this app. "
+            "Staff names, customer details, card and device info are stripped at "
+            "parse time, before anything is charted — see `src/square_parser.py`.\n\n"
+            "Refreshing the page or closing this tab clears the upload; there's "
+            "nothing to delete afterwards."
+        )
 
 # ---------------------------------------------------------------------------
 # Header + KPIs
 # ---------------------------------------------------------------------------
 st.title("Restaurant Operations Analytics")
-st.caption(
-    f"{start_date:%d %b %Y} – {end_date:%d %b %Y}  ·  {len(dow_sel)} day(s) of week  ·  "
-    f"{len(part_sel)} day-part(s)  ·  Source: Square POS exports"
-)
 
-total_revenue = f_orders["gross_sales"].sum()
-n_transactions = len(f_orders)
-avg_txn = total_revenue / n_transactions if n_transactions else 0
-n_days = f_orders["date"].dt.date.nunique()
-avg_daily_revenue = total_revenue / n_days if n_days else 0
-total_tips = f_orders["tip"].sum()
+if has_orders:
+    st.caption(
+        f"{start_date:%d %b %Y} – {end_date:%d %b %Y}  ·  {len(dow_sel)} day(s) of week  ·  "
+        f"{len(part_sel)} day-part(s)  ·  Source: Square POS exports"
+    )
 
-k1, k2, k3 = st.columns(3)
-k1.metric("Revenue", f"£{total_revenue:,.0f}", icon="💷", border=True,
-          help="Gross revenue across the selected filters")
-k2.metric("Transactions", f"{n_transactions:,}", icon="🧾", border=True,
-          help="Completed POS transactions in range")
-k3.metric("Avg txn value", f"£{avg_txn:,.2f}", icon="💳", border=True,
-          help="Gross revenue ÷ transaction count. Square's export doesn't include "
-               "covers/party size, so this is per-transaction rather than per-cover — "
-               "a real constraint of POS-only data.")
+    total_revenue = f_orders["gross_sales"].sum()
+    n_transactions = len(f_orders)
+    avg_txn = total_revenue / n_transactions if n_transactions else 0
+    n_days = f_orders["date"].dt.date.nunique()
+    avg_daily_revenue = total_revenue / n_days if n_days else 0
 
-k4, k5 = st.columns(2)
-k4.metric("Avg daily revenue", f"£{avg_daily_revenue:,.0f}", icon="📈", border=True,
-          help="Total revenue ÷ trading days in view")
-k5.metric("Trading days", f"{n_days}", icon="📅", border=True,
-          help="Distinct calendar days with at least one transaction, in the current filter")
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Revenue", f"£{total_revenue:,.0f}", icon="💷", border=True,
+              help="Gross revenue across the selected filters")
+    k2.metric("Transactions", f"{n_transactions:,}", icon="🧾", border=True,
+              help="Completed POS transactions in range")
+    k3.metric("Avg txn value", f"£{avg_txn:,.2f}", icon="💳", border=True,
+              help="Gross revenue ÷ transaction count. Square's export doesn't include "
+                   "covers/party size, so this is per-transaction rather than per-cover — "
+                   "a real constraint of POS-only data.")
+
+    k4, k5 = st.columns(2)
+    k4.metric("Avg daily revenue", f"£{avg_daily_revenue:,.0f}", icon="📈", border=True,
+              help="Total revenue ÷ trading days in view")
+    k5.metric("Trading days", f"{n_days}", icon="📅", border=True,
+              help="Distinct calendar days with at least one transaction, in the current filter")
+else:
+    n_days = 0
+    st.caption("No Transactions export uploaded yet — showing Menu Performance from your Item Sales export only.")
 
 st.divider()
 
-tab_peak, tab_daypart, tab_menu, tab_staff, tab_data = st.tabs(
-    ["⏰ Peak Trading Hours", "📅 Revenue by Day-part", "🍴 Menu Performance",
-     "👥 Staffing (illustrative)", "📋 Data"]
-)
+tab_labels = ["⏰ Peak Trading Hours", "📅 Revenue by Day-part", "🍴 Menu Performance"]
+if data_source == "Demo restaurant":
+    tab_labels.append("👥 Staffing (illustrative)")
+tab_labels.append("📋 Data")
+_tabs = st.tabs(tab_labels)
+tab_peak, tab_daypart, tab_menu = _tabs[0], _tabs[1], _tabs[2]
+tab_staff = _tabs[3] if data_source == "Demo restaurant" else None
+tab_data = _tabs[-1]
 
 # ---------------------------------------------------------------------------
 # Peak Trading Hours
 # ---------------------------------------------------------------------------
 with tab_peak:
     st.subheader("When is the restaurant actually busy?", divider=True)
-    st.caption(f"Transaction count by hour and day of week — {n_days} real trading days ({start_date:%d %b} – {end_date:%d %b %Y}).")
 
-    heat = f_orders.groupby(["dow_name", "hour"], as_index=False).size()
-    dow_present = [d for d in DOW_ORDER if d in heat["dow_name"].unique()]
-    pivot = heat.pivot(index="dow_name", columns="hour", values="size").reindex(dow_present)
-    pivot = pivot.reindex(sorted(pivot.columns), axis=1)
+    if not has_orders:
+        st.info("⬆️ Upload a Transactions export in the sidebar to see this.")
+    else:
+        st.caption(f"Transactions by hour, one panel per day of week — {n_days} trading days ({start_date:%d %b} – {end_date:%d %b %Y}).")
 
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=pivot.values, x=[f"{h:02d}:00" for h in pivot.columns], y=pivot.index,
-            colorscale=[[i / (len(theme.SEQUENTIAL_BLUE) - 1), c] for i, c in enumerate(theme.SEQUENTIAL_BLUE)],
-            hovertemplate="%{y}, %{x}<br>%{z:.0f} transactions<extra></extra>",
-            colorbar=dict(title="Txns"),
-        )
-    )
-    fig.update_layout(**theme.PLOTLY_LAYOUT, height=340, xaxis_title="Hour", yaxis_title=None)
-    st.plotly_chart(fig, width='stretch')
+        heat = f_orders.groupby(["dow_name", "hour"], as_index=False).size()
+        dow_present = [d for d in DOW_ORDER if d in heat["dow_name"].unique()]
+        heat["dow_name"] = pd.Categorical(heat["dow_name"], categories=dow_present, ordered=True)
+        heat = heat.sort_values(["dow_name", "hour"])
 
-    focus_dow = st.pills("Focus on a day", ["All days"] + dow_present, selection_mode="single",
-                          default="All days", key="peak_focus_dow")
-    focus_orders = f_orders if not focus_dow or focus_dow == "All days" else f_orders[f_orders["dow_name"] == focus_dow]
+        fig = px.bar(heat, x="hour", y="size", facet_col="dow_name", facet_col_wrap=4,
+                     color_discrete_sequence=[theme.CAT_BLUE], category_orders={"dow_name": dow_present})
+        fig.update_layout(**theme.PLOTLY_LAYOUT, height=420, showlegend=False)
+        fig.update_traces(hovertemplate="Hour %{x}:00<br>%{y} transactions<extra></extra>")
+        fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1], font=dict(size=13)))
+        fig.update_xaxes(title=None, dtick=4)
+        fig.update_yaxes(title=None, matches="y")
+        fig.add_annotation(text="Transactions", xref="paper", yref="paper", x=-0.06, y=0.5,
+                            showarrow=False, textangle=-90, font=dict(color=theme.INK_MUTED, size=12))
+        st.plotly_chart(fig, width='stretch')
 
-    if focus_dow and focus_dow != "All days":
-        n_focus = len(focus_orders)
-        fc1, fc2, fc3 = st.columns(3)
-        fc1.metric(f"{focus_dow} transactions", f"{n_focus:,}", border=True)
-        fc2.metric(f"{focus_dow} revenue", f"£{focus_orders['gross_sales'].sum():,.0f}", border=True)
-        fc3.metric(f"{focus_dow} avg txn value",
-                   f"£{(focus_orders['gross_sales'].sum() / n_focus if n_focus else 0):,.2f}", border=True)
+        focus_dow = st.pills("Focus on a day", ["All days"] + dow_present, selection_mode="single",
+                              default="All days", key="peak_focus_dow")
+        focus_orders = f_orders if not focus_dow or focus_dow == "All days" else f_orders[f_orders["dow_name"] == focus_dow]
 
-    c1, c2 = st.columns(2)
-    with c1:
-        by_hour = focus_orders.groupby("hour", as_index=False).size().sort_values("hour")
-        fig2 = px.bar(by_hour, x="hour", y="size", color_discrete_sequence=[theme.CAT_BLUE])
-        fig2.update_layout(**theme.PLOTLY_LAYOUT, height=320, xaxis_title="Hour", yaxis_title="Transactions")
-        fig2.update_traces(hovertemplate="Hour %{x}:00<br>%{y} transactions<extra></extra>")
-        st.plotly_chart(fig2, width='stretch')
-        st.caption(f"Total transactions by hour{'' if focus_dow in (None, 'All days') else f' — {focus_dow} only'}.")
-    with c2:
-        top_tables = focus_orders["table_number"].dropna().astype(str)
-        top_tables = top_tables[top_tables != ""].value_counts().head(10).reset_index()
-        top_tables.columns = ["table_number", "transactions"]
-        fig3 = px.bar(top_tables, x="table_number", y="transactions", color_discrete_sequence=[theme.CAT_ORANGE])
-        fig3.update_layout(**theme.PLOTLY_LAYOUT, height=320, xaxis_title="Table", yaxis_title="Transactions",
-                            xaxis_type="category")
-        fig3.update_traces(hovertemplate="Table %{x}<br>%{y} transactions<extra></extra>")
-        st.plotly_chart(fig3, width='stretch')
-        st.caption(f"Busiest tables by transaction count (top 10){'' if focus_dow in (None, 'All days') else f' — {focus_dow} only'}.")
+        if focus_dow and focus_dow != "All days":
+            n_focus = len(focus_orders)
+            fc1, fc2, fc3 = st.columns(3)
+            fc1.metric(f"{focus_dow} transactions", f"{n_focus:,}", border=True)
+            fc2.metric(f"{focus_dow} revenue", f"£{focus_orders['gross_sales'].sum():,.0f}", border=True)
+            fc3.metric(f"{focus_dow} avg txn value",
+                       f"£{(focus_orders['gross_sales'].sum() / n_focus if n_focus else 0):,.2f}", border=True)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            by_hour = focus_orders.groupby("hour", as_index=False).size().sort_values("hour")
+            fig2 = px.bar(by_hour, x="hour", y="size", color_discrete_sequence=[theme.CAT_BLUE])
+            fig2.update_layout(**theme.PLOTLY_LAYOUT, height=320, xaxis_title="Hour", yaxis_title="Transactions")
+            fig2.update_traces(hovertemplate="Hour %{x}:00<br>%{y} transactions<extra></extra>")
+            st.plotly_chart(fig2, width='stretch')
+            st.caption(f"Total transactions by hour{'' if focus_dow in (None, 'All days') else f' — {focus_dow} only'}.")
+        with c2:
+            top_tables = focus_orders["table_number"].dropna().astype(str)
+            top_tables = top_tables[top_tables != ""].value_counts().head(10).reset_index()
+            top_tables.columns = ["table_number", "transactions"]
+            if top_tables.empty:
+                st.info("No table numbers in this export.")
+            else:
+                fig3 = px.bar(top_tables, x="table_number", y="transactions", color_discrete_sequence=[theme.CAT_ORANGE])
+                fig3.update_layout(**theme.PLOTLY_LAYOUT, height=320, xaxis_title="Table", yaxis_title="Transactions",
+                                    xaxis_type="category")
+                fig3.update_traces(hovertemplate="Table %{x}<br>%{y} transactions<extra></extra>")
+                st.plotly_chart(fig3, width='stretch')
+                st.caption(f"Busiest tables by transaction count (top 10){'' if focus_dow in (None, 'All days') else f' — {focus_dow} only'}.")
 
 # ---------------------------------------------------------------------------
 # Revenue by Day-part
@@ -200,54 +311,57 @@ with tab_peak:
 with tab_daypart:
     st.subheader("Where does the revenue actually come from?", divider=True)
 
-    part_present = [p for p in DAY_PART_ORDER if p in f_orders["day_part"].unique()]
-    focus_part = st.pills("Focus on a day-part", ["All day-parts"] + part_present, selection_mode="single",
-                           default="All day-parts", key="daypart_focus")
-    part_orders = f_orders if not focus_part or focus_part == "All day-parts" else f_orders[f_orders["day_part"] == focus_part]
+    if not has_orders:
+        st.info("⬆️ Upload a Transactions export in the sidebar to see this.")
+    else:
+        part_present = [p for p in DAY_PART_ORDER if p in f_orders["day_part"].unique()]
+        focus_part = st.pills("Focus on a day-part", ["All day-parts"] + part_present, selection_mode="single",
+                               default="All day-parts", key="daypart_focus")
+        part_orders = f_orders if not focus_part or focus_part == "All day-parts" else f_orders[f_orders["day_part"] == focus_part]
 
-    if focus_part and focus_part != "All day-parts":
-        total_rev = f_orders["gross_sales"].sum()
-        part_rev = part_orders["gross_sales"].sum()
-        fc1, fc2, fc3 = st.columns(3)
-        fc1.metric(f"{focus_part} revenue", f"£{part_rev:,.0f}", border=True)
-        fc2.metric("Share of total", f"{(part_rev / total_rev if total_rev else 0):.1%}", border=True)
-        fc3.metric(f"{focus_part} transactions", f"{len(part_orders):,}", border=True)
+        if focus_part and focus_part != "All day-parts":
+            total_rev = f_orders["gross_sales"].sum()
+            part_rev = part_orders["gross_sales"].sum()
+            fc1, fc2, fc3 = st.columns(3)
+            fc1.metric(f"{focus_part} revenue", f"£{part_rev:,.0f}", border=True)
+            fc2.metric("Share of total", f"{(part_rev / total_rev if total_rev else 0):.1%}", border=True)
+            fc3.metric(f"{focus_part} transactions", f"{len(part_orders):,}", border=True)
 
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        rev_part = f_orders.groupby("day_part", as_index=False)["gross_sales"].sum().set_index("day_part").reindex(
-            part_present
-        ).reset_index()
-        fig = px.pie(rev_part, names="day_part", values="gross_sales", hole=0.55,
-                     color="day_part", color_discrete_map=theme.DAY_PART_COLOR)
-        fig.update_traces(hovertemplate="%{label}<br>£%{value:,.0f} (%{percent})<extra></extra>", textinfo="label+percent",
-                           pull=[0.06 if p == focus_part else 0 for p in rev_part["day_part"]])
-        fig.update_layout(**theme.PLOTLY_LAYOUT, height=340, showlegend=False)
-        st.plotly_chart(fig, width='stretch')
-        st.caption("Share of gross revenue by day-part (always shows all day-parts for context).")
-    with c2:
-        rev_dow_part = part_orders.groupby(["dow_name", "day_part"], as_index=False)["gross_sales"].sum()
-        rev_dow_part["dow_name"] = pd.Categorical(rev_dow_part["dow_name"], categories=dow_present_all, ordered=True)
-        fig2 = px.bar(rev_dow_part.sort_values("dow_name"), x="dow_name", y="gross_sales", color="day_part",
-                      color_discrete_map=theme.DAY_PART_COLOR, category_orders={"day_part": DAY_PART_ORDER})
-        fig2.update_layout(**theme.PLOTLY_LAYOUT, height=340, xaxis_title=None, yaxis_title="Revenue (£)", legend_title=None)
-        fig2.update_traces(hovertemplate="%{x}, %{fullData.name}<br>£%{y:,.0f}<extra></extra>")
-        st.plotly_chart(fig2, width='stretch')
-        st.caption(f"Revenue by day of week{'' if focus_part in (None, 'All day-parts') else f' — {focus_part} only'}.")
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            rev_part = f_orders.groupby("day_part", as_index=False)["gross_sales"].sum().set_index("day_part").reindex(
+                part_present
+            ).reset_index()
+            fig = px.pie(rev_part, names="day_part", values="gross_sales", hole=0.55,
+                         color="day_part", color_discrete_map=theme.DAY_PART_COLOR)
+            fig.update_traces(hovertemplate="%{label}<br>£%{value:,.0f} (%{percent})<extra></extra>", textinfo="label+percent",
+                               pull=[0.06 if p == focus_part else 0 for p in rev_part["day_part"]])
+            fig.update_layout(**theme.PLOTLY_LAYOUT, height=340, showlegend=False)
+            st.plotly_chart(fig, width='stretch')
+            st.caption("Share of gross revenue by day-part (always shows all day-parts for context).")
+        with c2:
+            rev_dow_part = part_orders.groupby(["dow_name", "day_part"], as_index=False)["gross_sales"].sum()
+            rev_dow_part["dow_name"] = pd.Categorical(rev_dow_part["dow_name"], categories=dow_present_all, ordered=True)
+            fig2 = px.bar(rev_dow_part.sort_values("dow_name"), x="dow_name", y="gross_sales", color="day_part",
+                          color_discrete_map=theme.DAY_PART_COLOR, category_orders={"day_part": DAY_PART_ORDER})
+            fig2.update_layout(**theme.PLOTLY_LAYOUT, height=340, xaxis_title=None, yaxis_title="Revenue (£)", legend_title=None)
+            fig2.update_traces(hovertemplate="%{x}, %{fullData.name}<br>£%{y:,.0f}<extra></extra>")
+            st.plotly_chart(fig2, width='stretch')
+            st.caption(f"Revenue by day of week{'' if focus_part in (None, 'All day-parts') else f' — {focus_part} only'}.")
 
-    st.subheader(
-        "Daily revenue trend", divider=True,
-        help=f"Only {n_days} days of POS data are available so far ({start_date:%d %b} – "
-             f"{end_date:%d %b %Y}) — too short a window to read seasonality from. More "
-             "Square exports would extend this directly."
-    )
-    daily = part_orders.groupby("date", as_index=False)["gross_sales"].sum()
-    fig3 = px.line(daily, x="date", y="gross_sales", color_discrete_sequence=[theme.CAT_BLUE], markers=True)
-    fig3.update_traces(hovertemplate="%{x|%a %d %b}<br>£%{y:,.0f}<extra></extra>", line=dict(width=2))
-    fig3.update_layout(**theme.PLOTLY_LAYOUT, height=320, xaxis_title=None, yaxis_title="Revenue (£)")
-    st.plotly_chart(fig3, width='stretch')
-    if focus_part and focus_part != "All day-parts":
-        st.caption(f"Revenue from {focus_part} only, by day.")
+        st.subheader(
+            "Daily revenue trend", divider=True,
+            help=f"Only {n_days} days of POS data are available so far ({start_date:%d %b} – "
+                 f"{end_date:%d %b %Y}) — too short a window to read seasonality from. More "
+                 "Square exports would extend this directly."
+        )
+        daily = part_orders.groupby("date", as_index=False)["gross_sales"].sum()
+        fig3 = px.line(daily, x="date", y="gross_sales", color_discrete_sequence=[theme.CAT_BLUE], markers=True)
+        fig3.update_traces(hovertemplate="%{x|%a %d %b}<br>£%{y:,.0f}<extra></extra>", line=dict(width=2))
+        fig3.update_layout(**theme.PLOTLY_LAYOUT, height=320, xaxis_title=None, yaxis_title="Revenue (£)")
+        st.plotly_chart(fig3, width='stretch')
+        if focus_part and focus_part != "All day-parts":
+            st.caption(f"Revenue from {focus_part} only, by day.")
 
 # ---------------------------------------------------------------------------
 # Menu Performance
@@ -261,72 +375,84 @@ with tab_menu:
              "actual item cost."
     )
 
-    with st.expander("⚙️ Adjust estimated cost-of-sales assumptions"):
-        st.caption("Square doesn't export COGS — drag these to stress-test how sensitive the quadrant below is to the assumption.")
-        sc1, sc2, sc3 = st.columns(3)
-        food_cost_pct = sc1.slider("Food cost %", 15, 45, 30)
-        drink_cost_pct = sc2.slider("Drink cost %", 10, 40, 22)
-        dessert_cost_pct = sc3.slider("Dessert cost %", 10, 40, 24)
-    cost_map = {"Food": food_cost_pct / 100, "Drink": drink_cost_pct / 100, "Dessert": dessert_cost_pct / 100}
+    if not has_items:
+        st.info("⬆️ Upload an Item Sales export in the sidebar to see this.")
+    else:
+        with st.expander("⚙️ Adjust estimated cost-of-sales assumptions"):
+            st.caption("Square doesn't export COGS — drag these to stress-test how sensitive the quadrant below is to the assumption.")
+            sc1, sc2, sc3 = st.columns(3)
+            food_cost_pct = sc1.slider("Food cost %", 15, 45, 30)
+            drink_cost_pct = sc2.slider("Drink cost %", 10, 40, 22)
+            dessert_cost_pct = sc3.slider("Dessert cost %", 10, 40, 24)
+        cost_map = {"Food": food_cost_pct / 100, "Drink": drink_cost_pct / 100, "Dessert": dessert_cost_pct / 100}
 
-    cat_sel = st.pills("Filter by category", CATEGORY_ORDER, selection_mode="multi",
-                        default=CATEGORY_ORDER, key="menu_cat") or []
-    item_f = item_sales[item_sales["category_group"].isin(cat_sel)].copy()
-    item_f["margin_pct"] = 1 - item_f["category_group"].map(cost_map)
+        cat_sel = st.pills("Filter by category", CATEGORY_ORDER, selection_mode="multi",
+                            default=CATEGORY_ORDER, key="menu_cat") or []
+        item_f = item_sales[item_sales["category_group"].isin(cat_sel)].copy()
+        item_f["margin_pct"] = 1 - item_f["category_group"].map(cost_map)
 
-    c1, c2 = st.columns([1.1, 1])
-    with c1:
-        top15 = item_f.sort_values("units_sold", ascending=False).head(15).sort_values("units_sold")
-        fig = px.bar(top15, x="units_sold", y="item_name", color="category_group", orientation="h",
-                     color_discrete_map=theme.CATEGORY_COLOR, category_orders={"category_group": CATEGORY_ORDER})
-        fig.update_layout(**theme.PLOTLY_LAYOUT, height=400, xaxis_title="Units sold", yaxis_title=None, legend_title=None)
-        fig.update_traces(hovertemplate="%{y}<br>%{x:.0f} units<extra></extra>")
-        st.plotly_chart(fig, width='stretch')
-        st.caption("Top 15 items by units sold.")
+        c1, c2 = st.columns([1.1, 1])
+        with c1:
+            sort_mode = st.segmented_control("Show", ["Best sellers", "Worst sellers"],
+                                              default="Best sellers", key="menu_sort_mode")
+            worst = sort_mode == "Worst sellers"
+            ranked15 = item_f.sort_values("units_sold", ascending=worst).head(15).sort_values("units_sold")
+            fig = px.bar(ranked15, x="units_sold", y="item_name", orientation="h",
+                         color=None if worst else "category_group",
+                         color_discrete_sequence=[theme.CAT_RED] if worst else None,
+                         color_discrete_map=None if worst else theme.CATEGORY_COLOR,
+                         category_orders={"category_group": CATEGORY_ORDER})
+            fig.update_layout(**theme.PLOTLY_LAYOUT, height=400, xaxis_title="Units sold", yaxis_title=None, legend_title=None)
+            fig.update_traces(hovertemplate="%{y}<br>%{x:.0f} units<extra></extra>")
+            st.plotly_chart(fig, width='stretch')
+            st.caption(
+                "Bottom 15 items by units sold — candidates to reconsider or discontinue."
+                if worst else "Top 15 items by units sold."
+            )
 
-        lookup_options = ["—"] + sorted(item_f["item_name"].unique().tolist())
-        selected_item = st.selectbox("🔍 Look up an item", lookup_options, key="item_lookup")
-        if selected_item != "—":
-            row = item_f[item_f["item_name"] == selected_item].iloc[0]
-            ranked = item_f.sort_values("revenue", ascending=False).reset_index(drop=True)
-            rank = int(ranked.index[ranked["item_name"] == selected_item][0]) + 1
-            d1, d2 = st.columns(2)
-            d1.metric("Units sold", f"{row['units_sold']:.0f}", border=True)
-            d2.metric("Revenue", f"£{row['revenue']:,.0f}", border=True, help=f"Rank #{rank} by revenue in the current filter")
-            d3, d4 = st.columns(2)
-            d3.metric("Avg price", f"£{row['avg_unit_price']:,.2f}", border=True)
-            d4.metric("Margin", f"{row['margin_pct']:.0%}", border=True, icon="⚙️",
-                      help="Estimated — uses the adjustable cost-of-sales assumption above")
-    with c2:
-        avg_pop = item_f["units_sold"].median()
-        avg_margin_pct = item_f["margin_pct"].median()
-        fig2 = px.scatter(item_f, x="units_sold", y="margin_pct", color="category_group", size="revenue",
-                           hover_name="item_name", color_discrete_map=theme.CATEGORY_COLOR,
-                           category_orders={"category_group": CATEGORY_ORDER})
-        fig2.add_vline(x=avg_pop, line_dash="dash", line_color=theme.INK_MUTED)
-        fig2.add_hline(y=avg_margin_pct, line_dash="dash", line_color=theme.INK_MUTED)
-        fig2.update_traces(hovertemplate="%{hovertext}<br>%{x:.0f} units, %{y:.0%} est. margin<extra></extra>")
-        fig2.update_layout(**theme.PLOTLY_LAYOUT, height=460, xaxis_title="Units sold (popularity)",
-                            yaxis_title="Estimated margin %", yaxis_tickformat=".0%", legend_title=None)
-        st.plotly_chart(fig2, width='stretch')
-        st.caption(
-            "Menu engineering quadrant (estimated margin) — top-right = **Stars**, "
-            "bottom-right = **Plowhorses**, top-left = **Puzzles**, bottom-left = **Dogs**."
+            lookup_options = ["—"] + sorted(item_f["item_name"].unique().tolist())
+            selected_item = st.selectbox("🔍 Look up an item", lookup_options, key="item_lookup")
+            if selected_item != "—":
+                row = item_f[item_f["item_name"] == selected_item].iloc[0]
+                ranked = item_f.sort_values("revenue", ascending=False).reset_index(drop=True)
+                rank = int(ranked.index[ranked["item_name"] == selected_item][0]) + 1
+                d1, d2 = st.columns(2)
+                d1.metric("Units sold", f"{row['units_sold']:.0f}", border=True)
+                d2.metric("Revenue", f"£{row['revenue']:,.0f}", border=True, help=f"Rank #{rank} by revenue in the current filter")
+                d3, d4 = st.columns(2)
+                d3.metric("Avg price", f"£{row['avg_unit_price']:,.2f}", border=True)
+                d4.metric("Margin", f"{row['margin_pct']:.0%}", border=True, icon="⚙️",
+                          help="Estimated — uses the adjustable cost-of-sales assumption above")
+        with c2:
+            avg_pop = item_f["units_sold"].median()
+            avg_margin_pct = item_f["margin_pct"].median()
+            fig2 = px.scatter(item_f, x="units_sold", y="margin_pct", color="category_group", size="revenue",
+                               hover_name="item_name", color_discrete_map=theme.CATEGORY_COLOR,
+                               category_orders={"category_group": CATEGORY_ORDER})
+            fig2.add_vline(x=avg_pop, line_dash="dash", line_color=theme.INK_MUTED)
+            fig2.add_hline(y=avg_margin_pct, line_dash="dash", line_color=theme.INK_MUTED)
+            fig2.update_traces(hovertemplate="%{hovertext}<br>%{x:.0f} units, %{y:.0%} est. margin<extra></extra>")
+            fig2.update_layout(**theme.PLOTLY_LAYOUT, height=460, xaxis_title="Units sold (popularity)",
+                                yaxis_title="Estimated margin %", yaxis_tickformat=".0%", legend_title=None)
+            st.plotly_chart(fig2, width='stretch')
+            st.caption(
+                "Menu engineering quadrant (estimated margin) — top-right = **Stars**, "
+                "bottom-right = **Plowhorses**, top-left = **Puzzles**, bottom-left = **Dogs**."
+            )
+
+        st.subheader("Full item performance", divider=True)
+        st.dataframe(
+            item_f.sort_values("revenue", ascending=False)[
+                ["item_name", "raw_category", "category_group", "units_sold", "revenue", "avg_unit_price"]
+            ].rename(columns={"item_name": "Item", "raw_category": "Square category", "category_group": "Group",
+                               "units_sold": "Units sold", "revenue": "Revenue (£)", "avg_unit_price": "Avg price (£)"}),
+            width='stretch', hide_index=True,
         )
 
-    st.subheader("Full item performance", divider=True)
-    st.dataframe(
-        item_f.sort_values("revenue", ascending=False)[
-            ["item_name", "raw_category", "category_group", "units_sold", "revenue", "avg_unit_price"]
-        ].rename(columns={"item_name": "Item", "raw_category": "Square category", "category_group": "Group",
-                           "units_sold": "Units sold", "revenue": "Revenue (£)", "avg_unit_price": "Avg price (£)"}),
-        width='stretch', hide_index=True,
-    )
-
 # ---------------------------------------------------------------------------
-# Staffing (illustrative)
+# Staffing (illustrative) — demo dataset only, tab doesn't exist on uploads
 # ---------------------------------------------------------------------------
-with tab_staff:
+def _render_staffing_tab():
     st.warning(
         "⚠️ **Illustrative model, not real data.** Square Timecards haven't been exported yet, "
         "so this tab runs on a synthetic full year (see `src/generate_data.py`) to demonstrate "
@@ -371,21 +497,33 @@ with tab_staff:
         f"applies once real Timecards data is connected."
     )
 
+
+if tab_staff is not None:
+    with tab_staff:
+        _render_staffing_tab()
+
 # ---------------------------------------------------------------------------
 # Data tab
 # ---------------------------------------------------------------------------
 with tab_data:
     st.subheader(
         "Underlying data", divider=True,
-        help="Real, anonymised Square POS exports — see `src/load_square_data.py` for the "
+        help="Cleaned, anonymised Square POS data — see `src/square_parser.py` for the "
              "cleaning and anonymisation logic (staff names, customer IDs, card/device "
-             "details are dropped at load time and never written here)."
+             "details are dropped at parse time and never shown here)."
     )
     d1, d2 = st.columns(2)
     with d1:
         st.markdown("**Transactions (filtered)**")
-        st.dataframe(f_orders, width='stretch', hide_index=True, height=300)
+        if has_orders:
+            st.dataframe(f_orders, width='stretch', hide_index=True, height=300)
+            st.download_button("Download filtered transactions (CSV)", f_orders.to_csv(index=False),
+                                "transactions_filtered.csv", "text/csv")
+        else:
+            st.info("No Transactions export uploaded.")
     with d2:
         st.markdown("**Item sales (period total)**")
-        st.dataframe(item_sales, width='stretch', hide_index=True, height=300)
-    st.download_button("Download filtered transactions (CSV)", f_orders.to_csv(index=False), "transactions_filtered.csv", "text/csv")
+        if has_items:
+            st.dataframe(item_sales, width='stretch', hide_index=True, height=300)
+        else:
+            st.info("No Item Sales export uploaded.")

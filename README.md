@@ -71,6 +71,14 @@ turned into a measurable, filterable tool.
 
 ## What's in the dashboard
 
+- **KPI cards with sparklines** — the top-line Revenue/Transactions/Avg
+  transaction value cards each carry a small inline trend of the daily
+  values behind the headline number, so the shape of the period is visible
+  at a glance, not just the total.
+- **Auto-generated insights** — each tab computes a plain-English "Reading
+  it" callout from whatever's currently in view (busiest slot, dominant
+  day-part, best seller), so it updates live as filters change rather than
+  being a static caption.
 - **Peak Trading Hours** — transactions by hour, one small bar-chart panel
   per day of week (deliberately not a heatmap — a grid of bars reads more
   precisely than colour intensity), plus totals by hour and busiest tables.
@@ -81,8 +89,11 @@ turned into a measurable, filterable tool.
 - **Menu Performance** — a **Best sellers / Worst sellers** toggle over
   units sold (the worst-sellers view is the "candidates to cut" list), a
   menu-engineering quadrant (popularity vs. estimated margin — Stars/
-  Plowhorses/Puzzles/Dogs) with live-adjustable cost-of-sales sliders, and a
-  searchable item lookup with a detail card.
+  Plowhorses/Puzzles/Dogs) with live-adjustable cost-of-sales sliders, a
+  searchable item lookup, and a **clickable performance table** — click any
+  row for the same detail card the lookup gives you. (Streamlit's native
+  dataframe row-selection, not a Plotly chart click — the two use different
+  underlying mechanisms, and only the former proved reliable here.)
 - **Staffing** — on the demo dataset, clearly flagged as a modelled
   placeholder (no real Timecards export exists for it yet), showing the
   staffing-lag analysis method on a synthetic year. On an upload with a
@@ -157,6 +168,15 @@ restaurant-ops-dashboard/
 - **Category grouping** — Square's 47 raw menu categories are mapped to
   Food / Drink / Dessert for consistent chart coloring, with the original
   category kept as a filterable detail field.
+- **Item-name aggregation, Menu Performance** — Square's Item Sales export
+  has one row per item *variation* ("Cappuccino / Regular", "Cappuccino /
+  Large"), but every chart, the table, and the lookup all key on item name
+  alone. Building the click-to-detail feature surfaced this: two rows both
+  labelled "Cappuccino" with different numbers, and whichever sorted first
+  silently won. Fixed by aggregating to one row per item name before
+  anything else touches it, rather than patching each display point
+  separately — the ambiguity doesn't exist anywhere downstream instead of
+  being fixed once and re-introduced by the next chart.
 - **Estimated margin** — Food 30% / Drink 22% / Dessert 24% cost-of-sales,
   typical UK hospitality benchmarks, used only because Square doesn't export
   COGS. Always labelled "estimated" in the app, never presented as actual.

@@ -241,15 +241,24 @@ if has_orders:
     n_days = f_orders["date"].dt.date.nunique()
     avg_daily_revenue = total_revenue / n_days if n_days else 0
 
+    daily_kpi = f_orders.groupby(f_orders["date"].dt.date, as_index=False).agg(
+        revenue=("gross_sales", "sum"), txns=("order_id", "count")
+    ).sort_values("date")
+    daily_kpi["avg_txn"] = (daily_kpi["revenue"] / daily_kpi["txns"]).replace([np.inf, -np.inf], np.nan)
+    spark = len(daily_kpi) > 1  # a one-point sparkline isn't a trend
+
     k1, k2, k3 = st.columns(3)
     k1.metric("Revenue", f"£{total_revenue:,.0f}", icon="💷", border=True,
-              help="Gross revenue across the selected filters")
+              help="Gross revenue across the selected filters",
+              chart_data=daily_kpi["revenue"] if spark else None, chart_type="area")
     k2.metric("Transactions", f"{n_transactions:,}", icon="🧾", border=True,
-              help="Completed POS transactions in range")
+              help="Completed POS transactions in range",
+              chart_data=daily_kpi["txns"] if spark else None, chart_type="area")
     k3.metric("Avg txn value", f"£{avg_txn:,.2f}", icon="💳", border=True,
               help="Gross revenue ÷ transaction count. Square's export doesn't include "
                    "covers/party size, so this is per-transaction rather than per-cover — "
-                   "a real constraint of POS-only data.")
+                   "a real constraint of POS-only data.",
+              chart_data=daily_kpi["avg_txn"] if spark else None, chart_type="area")
 
     k4, k5 = st.columns(2)
     k4.metric("Avg daily revenue", f"£{avg_daily_revenue:,.0f}", icon="📈", border=True,
@@ -293,6 +302,14 @@ with tab_peak:
         fig.add_annotation(text="Transactions", xref="paper", yref="paper", x=-0.06, y=0.5,
                             showarrow=False, textangle=-90, font=dict(color=theme.INK_MUTED, size=12))
         st.plotly_chart(fig, width='stretch')
+
+        if len(heat) and heat["size"].mean() > 0:
+            busiest = heat.loc[heat["size"].idxmax()]
+            multiple = busiest["size"] / heat["size"].mean()
+            st.info(
+                f"**Reading it:** Your busiest slot is **{busiest['dow_name']} at {int(busiest['hour']):02d}:00**, "
+                f"with {int(busiest['size'])} transactions — {multiple:.1f}x an average hour."
+            )
 
         focus_dow = st.pills("Focus on a day", ["All days"] + dow_present, selection_mode="single",
                               default="All days", key="peak_focus_dow")
@@ -372,6 +389,16 @@ with tab_daypart:
             st.plotly_chart(fig2, width='stretch')
             st.caption(f"Revenue by day of week{'' if focus_part in (None, 'All day-parts') else f' — {focus_part} only'}.")
 
+        if len(rev_part) and rev_part["gross_sales"].sum() > 0:
+            top_part = rev_part.loc[rev_part["gross_sales"].idxmax()]
+            top_part_share = top_part["gross_sales"] / rev_part["gross_sales"].sum()
+            by_day_total = f_orders.groupby("date")["gross_sales"].sum()
+            best_day = by_day_total.idxmax()
+            st.info(
+                f"**Reading it:** **{top_part['day_part']}** brings in {top_part_share:.0%} of revenue — the "
+                f"largest share. Your best single day was **{best_day:%a %d %b}** at £{by_day_total.max():,.0f}."
+            )
+
         st.subheader(
             "Daily revenue trend", divider=True,
             help=f"Only {n_days} days of POS data are available so far ({start_date:%d %b} – "
@@ -412,6 +439,15 @@ with tab_menu:
         cat_sel = st.pills("Filter by category", CATEGORY_ORDER, selection_mode="multi",
                             default=CATEGORY_ORDER, key="menu_cat") or []
         item_f = item_sales[item_sales["category_group"].isin(cat_sel)].copy()
+        # Square exports one row per item+variation (e.g. "Cappuccino / Regular" and
+        # "Cappuccino / Large") but every chart/table/lookup below keys on item_name
+        # alone — collapse variations into one row per name so "Cappuccino" means one
+        # thing everywhere, instead of silently picking whichever variation sorts first.
+        item_f = item_f.groupby("item_name", as_index=False).agg(
+            raw_category=("raw_category", "first"), category_group=("category_group", "first"),
+            units_sold=("units_sold", "sum"), revenue=("revenue", "sum"),
+        )
+        item_f["avg_unit_price"] = (item_f["revenue"] / item_f["units_sold"]).replace([np.inf, -np.inf], np.nan)
         item_f["margin_pct"] = 1 - item_f["category_group"].map(cost_map)
 
         c1, c2 = st.columns([1.1, 1])
@@ -463,14 +499,41 @@ with tab_menu:
                 "bottom-right = **Plowhorses**, top-left = **Puzzles**, bottom-left = **Dogs**."
             )
 
+        if len(item_f):
+            top_item = item_f.sort_values("units_sold", ascending=False).iloc[0]
+            top_item_share = top_item["units_sold"] / item_f["units_sold"].sum() if item_f["units_sold"].sum() else 0
+            n_dogs = len(item_f[(item_f["units_sold"] < avg_pop) & (item_f["margin_pct"] < avg_margin_pct)])
+            dogs_msg = (
+                f"{n_dogs} item(s) sit in the low-popularity, low-margin \"Dogs\" quadrant — worth a second look."
+                if n_dogs else "No items currently sit in the low-popularity, low-margin \"Dogs\" quadrant."
+            )
+            st.info(
+                f"**Reading it:** **{top_item['item_name']}** is your best seller — "
+                f"{int(top_item['units_sold'])} units, {top_item_share:.0%} of everything sold in this filter. "
+                f"{dogs_msg}"
+            )
+
         st.subheader("Full item performance", divider=True)
-        st.dataframe(
-            item_f.sort_values("revenue", ascending=False)[
-                ["item_name", "raw_category", "category_group", "units_sold", "revenue", "avg_unit_price"]
-            ].rename(columns={"item_name": "Item", "raw_category": "Square category", "category_group": "Group",
-                               "units_sold": "Units sold", "revenue": "Revenue (£)", "avg_unit_price": "Avg price (£)"}),
-            width='stretch', hide_index=True,
+        st.caption("Click a row for a detail card.")
+        perf_display = item_f.sort_values("revenue", ascending=False)[
+            ["item_name", "raw_category", "category_group", "units_sold", "revenue", "avg_unit_price"]
+        ].rename(columns={"item_name": "Item", "raw_category": "Square category", "category_group": "Group",
+                           "units_sold": "Units sold", "revenue": "Revenue (£)", "avg_unit_price": "Avg price (£)"})
+        table_event = st.dataframe(
+            perf_display, width='stretch', hide_index=True,
+            on_select="rerun", selection_mode="single-row", key="item_perf_table",
         )
+        selected_rows = table_event["selection"]["rows"] if table_event else []
+        if selected_rows:
+            clicked_name = perf_display.iloc[selected_rows[0]]["Item"]
+            row = item_f[item_f["item_name"] == clicked_name].iloc[0]
+            st.markdown(f"**{clicked_name}**")
+            e1, e2, e3, e4 = st.columns(4)
+            e1.metric("Units sold", f"{row['units_sold']:.0f}", border=True)
+            e2.metric("Revenue", f"£{row['revenue']:,.0f}", border=True)
+            e3.metric("Avg price", f"£{row['avg_unit_price']:,.2f}", border=True)
+            e4.metric("Margin", f"{row['margin_pct']:.0%}", border=True, icon="⚙️",
+                      help="Estimated — uses the adjustable cost-of-sales assumption above")
 
 # ---------------------------------------------------------------------------
 # Staffing — synthetic model for the demo dataset, real analysis when a

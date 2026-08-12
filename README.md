@@ -1,5 +1,7 @@
 # Restaurant Operations Analytics Dashboard
 
+[![Tests](https://github.com/Hamuda55/restaurant-ops-dashboard/actions/workflows/tests.yml/badge.svg)](https://github.com/Hamuda55/restaurant-ops-dashboard/actions/workflows/tests.yml)
+
 **Live app:** https://restaurant-ops-dashboard-n9kgly3fxs25f5n57sceve.streamlit.app/
 
 An interactive dashboard analysing restaurant trading patterns — peak hours,
@@ -141,6 +143,24 @@ streamlit run src/app.py
 
 Opens at `http://localhost:8501`.
 
+## Running the tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v
+```
+
+66 tests covering `square_parser.py`'s parsing/cleaning logic — encoding
+and delimiter sniffing, malformed-input error handling, and, most
+importantly, the anonymisation guarantees: dedicated tests assert that
+PII/identifier columns (staff name/ID, customer details, card/device info,
+employee identity in Timecards) never survive into the cleaned output, not
+just that the code runs. `tests/test_data_regressions.py` is different in
+kind — it reads the actual tracked `data/real/` CSVs and asserts a specific
+past incident (a staff-entered name that leaked through the `table_number`
+field) can't silently reappear. Runs on every push via GitHub Actions
+(`.github/workflows/tests.yml`).
+
 ## Project structure
 
 ```
@@ -154,13 +174,16 @@ restaurant-ops-dashboard/
 │   ├── export_bi.py         # star-schema export for Power BI / Tableau
 │   ├── theme.py             # shared chart color palette
 │   └── app.py                # Streamlit dashboard (demo data + upload-your-own)
+├── tests/                    # pytest suite — see "Running the tests" above
+├── .github/workflows/tests.yml  # CI: runs the test suite on every push
 ├── data/
 │   ├── raw/                 # original Square exports — gitignored, local only
 │   ├── real/                # cleaned, anonymised real data (tracked)
 │   ├── synthetic/           # modelled year, used only by the Staffing tab
 │   └── bi_export/           # real-data star schema for Power BI / Tableau
 ├── BI_TOOL_GUIDE.md          # how to rebuild this in Power BI / Tableau
-└── requirements.txt
+├── requirements.txt
+└── requirements-dev.txt      # adds pytest, for running the test suite
 ```
 
 ## Methodology notes (for the interview)

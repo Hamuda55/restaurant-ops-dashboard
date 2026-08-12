@@ -1,5 +1,7 @@
 # Restaurant Operations Analytics Dashboard
 
+**Live app:** https://restaurant-ops-dashboard-n9kgly3fxs25f5n57sceve.streamlit.app/
+
 An interactive dashboard analysing restaurant trading patterns — peak hours,
 revenue by day-part, and menu performance — built on **real, anonymised
 Square POS exports** from an independent restaurant where I manage

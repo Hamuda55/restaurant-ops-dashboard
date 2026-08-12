@@ -14,6 +14,7 @@ exports exist too. read_square_csv() sniffs both rather than assuming.
 from __future__ import annotations
 
 import io
+import re
 from typing import BinaryIO
 
 import numpy as np
@@ -279,6 +280,24 @@ def clean_timecards(df: pd.DataFrame) -> pd.DataFrame:
     return df[["shift_id", "date", "dow_name", "day_part", "job", "hours", "labor_cost"]]
 
 
+# "Table info" is a free-text field in Square, meant for a table number but
+# with nothing stopping staff from typing a note or a name into it instead.
+# Only pass through values that actually look like a table identifier —
+# plain numbers, split-bill format ("5 - 2"), or a takeaway label — and drop
+# anything else rather than risk displaying a name that ended up there by
+# accident. (This is exactly what happened in this project's own export.)
+_VALID_TABLE_RE = re.compile(r"^\d+(\s*-\s*\d+)?$")
+
+
+def sanitize_table_number(value) -> "str | float":
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return np.nan
+    if _VALID_TABLE_RE.match(text) or text.lower().startswith("takeaw"):
+        return text
+    return np.nan
+
+
 def clean_transactions(df: pd.DataFrame) -> pd.DataFrame:
     require_columns(df, TRANSACTIONS_REQUIRED, "Transactions")
     df = df.copy()
@@ -305,6 +324,8 @@ def clean_transactions(df: pd.DataFrame) -> pd.DataFrame:
 
     if "Table info" not in df.columns:
         df["Table info"] = np.nan
+    else:
+        df["Table info"] = df["Table info"].apply(sanitize_table_number)
     if "Source" not in df.columns:
         df["Source"] = "Unknown"
 

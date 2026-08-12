@@ -831,7 +831,7 @@ order_id,date,time,hour,dow_name,day_part,gross_sales,net_sales,tax,tip,table_nu
 830,2026-07-26,19:51:50,19,Sunday,Dinner,85.3,71.08,14.22,0.0,28,Point of Sale
 831,2026-07-26,20:38:16,20,Sunday,Dinner,50.35,41.96,8.39,0.0,20,Point of Sale
 832,2026-07-26,20:50:39,20,Sunday,Dinner,102.15,85.13,17.02,10.22,6,Register
-833,2026-07-26,21:02:01,21,Sunday,Dinner,6.6,5.5,1.1,0.01,46 Agor dennis,Register
+833,2026-07-26,21:02:01,21,Sunday,Dinner,6.6,5.5,1.1,0.01,,Register
 834,2026-07-26,21:12:21,21,Sunday,Dinner,167.7,139.75,27.95,25.16,45,Point of Sale
 835,2026-07-26,21:22:04,21,Sunday,Dinner,143.75,119.79,23.96,0.0,25,Point of Sale
 836,2026-07-26,21:26:44,21,Sunday,Dinner,90.3,75.25,15.05,9.03,26,Point of Sale

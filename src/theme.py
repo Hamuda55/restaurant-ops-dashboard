@@ -31,7 +31,13 @@ SURFACE = "#fcfcfb"
 
 # Fixed entity -> color maps (identity, not rank)
 DAY_PART_COLOR = {"Breakfast": CAT_BLUE, "Lunch": CAT_ORANGE, "Afternoon": CAT_AQUA, "Dinner": CAT_YELLOW}
-CATEGORY_COLOR = {"Food": CAT_BLUE, "Drink": CAT_ORANGE, "Dessert": CAT_MAGENTA}
+# Blue/Orange/Aqua, not Blue/Orange/Magenta: validated with the dataviz
+# skill's contrast script (node scripts/validate_palette.js --pairs all).
+# Orange<->Magenta measured ΔE 12.9 for normal vision — below the 15 floor,
+# i.e. hard to tell apart even with full colour vision, not just CVD. Aqua
+# is the documented "first three slots" combination that actually passes
+# all-pairs (worst pair ΔE 24.0 normal-vision, 9.2 CVD).
+CATEGORY_COLOR = {"Food": CAT_BLUE, "Drink": CAT_ORANGE, "Dessert": CAT_AQUA}
 
 PLOTLY_LAYOUT = dict(
     paper_bgcolor="rgba(0,0,0,0)",
